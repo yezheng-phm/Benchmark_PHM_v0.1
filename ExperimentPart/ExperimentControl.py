@@ -16,17 +16,17 @@ if __name__ == "__main__":
 
 #------------------model configuration--------------------------#
 
-    MODEL_NAME = "CNN"
+    MODEL_NAME = "Transformer"
 
-    FILE_PATH = r"D:\Project\PHM_Data\SampledData\zy_10000_1024_512_ex028_10Lables\sampled_data_20260901164611.pt"
+    FILE_PATH = r"D:\Project\PHM_Data\SampledData\10000-1024-512-ex028-10Lables\sampled_data_20260910150414.pt"
     NUM_CLASSES = 10
 
 
     #-----------------trainer configuration-------------------------#
 
     BATCH_SIZE = 32
-    EPOCHS = 100
-    RUNS_NUM = 10
+    EPOCHS = 2
+    RUNS_NUM = 2
 
     LEARNING_RATE = 0.001
     OPTIMIZER = "Adam"
@@ -34,17 +34,12 @@ if __name__ == "__main__":
 
     BASE_SEED = 42
 
-    FEATURES_SAVE_LAYERS = [
-        "conv1",
-        "conv2",
-        "conv3",
-        "globalpool"
-    ]
+    FEATURES_SAVE_LAYERS = []
 
     #-----------------experiment configuration-------------------------#
 
-    EXPERIMENT_NAME = "CNN_Test_100epochs"
-    EXPERIMENT_ID = "05"
+    EXPERIMENT_NAME = "Transformer_Test"
+    EXPERIMENT_ID = "02"
     EXPERIMENT_DATA_PATH = r"D:\Project\PHM_Data\ExperimentData\tests"
 
 

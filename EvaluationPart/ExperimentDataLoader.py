@@ -19,8 +19,12 @@ class ExperimentDataLoader:
         experiment_name,
         experiment_id,
         experiment_data_path,
-        plot_feature_layers="all"
+        plot_feature_layers=None
     ):
+
+        #--the fault value for plot_feature_layers is "all"
+        if plot_feature_layers is None:
+            plot_feature_layers = "all"
 
         #--validate the experiment name to ensure it is not empty.
         if not experiment_name:
@@ -116,36 +120,47 @@ class ExperimentDataLoader:
                 "Feature information is missing."
             )
 
-        features_path = features_info["features_path"]
-
-        if features_path is None:
-            raise ValueError(
-                "Feature path is missing."
-            )
-
-        features_file_path = os.path.join(
-            self.experiment_data_path,
-            features_path
+        visualization_features_path = (
+            features_info["converted_features_path"]
         )
 
-        if not os.path.exists(features_file_path):
+        visualization_features_file_path = os.path.join(
+            self.experiment_data_path,
+            visualization_features_path
+        )
+
+        if not os.path.exists(
+            visualization_features_file_path
+        ):
             raise FileNotFoundError(
-                f"Feature file not found: {features_file_path}"
+                "Visualization feature file not found: "
+                f"{visualization_features_file_path}"
             )
 
-        features = torch.load(
-            features_file_path,
+        visualization_features = torch.load(
+            visualization_features_file_path,
             weights_only=False
         )
 
-        return list(features.keys())
+        return list(
+            visualization_features.keys()
+        )
 
 
-    #--validate the plot feature layer is useful
+    #--validate the plot feature layers.
     def _validate_plot_feature_layers(
         self,
         plot_feature_layers
     ):
+
+        print(
+            "Available feature layers for visualization:"
+        )
+
+        for feature_layer in self.available_feature_layers:
+            print(
+                f"  - {feature_layer}"
+            )
 
         #--"all" means that all available feature layers will be used for visualization.
         if plot_feature_layers == "all":
@@ -213,11 +228,11 @@ class ExperimentDataLoader:
         #--validate the final test information.
         self._validate_test_info()
 
-        #--validate the feature information.
-        self._validate_features_info()
-
         #--validate the model information.
         self._validate_model_info()
+
+        #--validate the feature information.
+        self._validate_features_info()
 
         #--validate the additional information.
         self._validate_additional_info()
@@ -505,15 +520,18 @@ class ExperimentDataLoader:
 
     #--validate the feature information of every run.
     def _validate_features_info(self):
+        """Validate the features information of every experiment result."""
 
         expected_keys = {
             "features_path",
+            "converted_features_path",
             "selected_model_epoch_num"
         }
 
         for run_result in self.experiment_results:
 
             features_info = run_result.features_info
+            model_info = run_result.model_info
 
             if not isinstance(
                 features_info,
@@ -534,7 +552,17 @@ class ExperimentDataLoader:
                 str
             ):
                 raise TypeError(
-                    "features_info['features_path'] must be a string!"
+                    "features_info['features_path'] "
+                    "must be a string!"
+                )
+
+            if not isinstance(
+                features_info["converted_features_path"],
+                str
+            ):
+                raise TypeError(
+                    "features_info['converted_features_path'] "
+                    "must be a string!"
                 )
 
             if not isinstance(
@@ -544,6 +572,16 @@ class ExperimentDataLoader:
                 raise TypeError(
                     "features_info['selected_model_epoch_num'] "
                     "must be an integer!"
+                )
+
+            #--validate consistency with model information.
+            if (
+                features_info["selected_model_epoch_num"]
+                != model_info["selected_model_epoch_num"]
+            ):
+                raise ValueError(
+                    "The selected_model_epoch_num in "
+                    "features_info and model_info must be the same!"
                 )
 
 
@@ -626,15 +664,15 @@ class ExperimentDataLoader:
     #--construct the epoch-level view of experiment results.
     def _get_epoch_level_view(self):
 
-        epoch_level_view = []
-
-        #--get the maximum number of epochs.
+        # Get the maximum number of epochs among all runs.
         max_epoch_num = max(
-            len(run_result.epoch_info_list)
+            epoch_info.epoch_num
             for run_result in self.experiment_results
+            for epoch_info in run_result.epoch_info_list
         )
 
-        #--construct the information of every epoch.
+        epoch_level_view = []
+
         for epoch_num in range(1, max_epoch_num + 1):
 
             epoch_info = {
@@ -642,71 +680,83 @@ class ExperimentDataLoader:
                 "runs": []
             }
 
-            #--collect the information of every run
-            #--at the current epoch.
             for run_result in self.experiment_results:
 
-                run_id = run_result.exper_info["run_id"]
-
-                #--find the epoch result corresponding to
-                #--the current epoch number.
-                epoch_result = next(
+                # Find the epoch information for this run.
+                current_epoch_info = next(
                     (
-                        epoch
-                        for epoch in run_result.epoch_info_list
-                        if epoch.epoch_num == epoch_num
+                        epoch_info_item
+                        for epoch_info_item in run_result.epoch_info_list
+                        if epoch_info_item.epoch_num == epoch_num
                     ),
                     None
                 )
 
-                #--determine whether the current run contains
-                #--information for the current epoch.
-                if epoch_result is None:
+                # ---------------------------------------------------------
+                # The current run does not contain this epoch.
+                # ---------------------------------------------------------
+                if current_epoch_info is None:
 
-                    run_epoch_info = {
-                        "run_num": run_id,
+                    epoch_info["runs"].append({
+                        "run_id": run_result.exper_info["run_id"],
                         "is_exist": False,
-                        "train_accuracy": None,
                         "train_loss": None,
-                        "validation_accuracy": None,
-                        "validation_loss": None,
-                        "train_time": None
-                    }
+                        "train_accuracy": None,
+                        "train_time": None,
+                        "valid_loss": None,
+                        "valid_accuracy": None,
+                        "valid_time": None
+                    })
 
-                else:
+                    continue
 
-                    run_epoch_info = {
-                        "run_num": run_id,
-                        "is_exist": True,
-                        "train_accuracy": round(
-                            epoch_result.epoch_train_accuracy,
-                            3
-                        ),
-                        "train_loss": round(
-                            epoch_result.epoch_train_loss,
-                            3
-                        ),
-                        "validation_accuracy": round(
-                            epoch_result.epoch_validation_accuracy,
-                            3
-                        ),
-                        "validation_loss": round(
-                            epoch_result.epoch_validation_loss,
-                            3
-                        ),
-                        "train_time": round(
-                            epoch_result.epoch_train_time,
-                            3
-                        )
-                    }
+                # ---------------------------------------------------------
+                # The current run contains this epoch.
+                #
+                # Keep the same None-safe logic as _get_run_level_view().
+                # ---------------------------------------------------------
+                epoch_info["runs"].append({
+                    "run_id": run_result.exper_info["run_id"],
+                    "is_exist": True,
 
-                epoch_info["runs"].append(
-                    run_epoch_info
-                )
+                    "train_loss": (
+                        round(current_epoch_info.train_loss, 3)
+                        if current_epoch_info.train_loss is not None
+                        else None
+                    ),
 
-            epoch_level_view.append(
-                epoch_info
-            )
+                    "train_accuracy": (
+                        round(current_epoch_info.train_accuracy, 3)
+                        if current_epoch_info.train_accuracy is not None
+                        else None
+                    ),
+
+                    "train_time": (
+                        round(current_epoch_info.train_time, 3)
+                        if current_epoch_info.train_time is not None
+                        else None
+                    ),
+
+                    "valid_loss": (
+                        round(current_epoch_info.valid_loss, 3)
+                        if current_epoch_info.valid_loss is not None
+                        else None
+                    ),
+
+                    "valid_accuracy": (
+                        round(current_epoch_info.valid_accuracy, 3)
+                        if current_epoch_info.valid_accuracy is not None
+                        else None
+                    ),
+
+                    "valid_time": (
+                        round(current_epoch_info.valid_time, 3)
+                        if current_epoch_info.valid_time is not None
+                        else None
+                    )
+                })
+
+            epoch_level_view.append(epoch_info)
 
         return epoch_level_view
 
@@ -819,7 +869,10 @@ class ExperimentDataLoader:
                 "y_true": test_info["y_true"],
                 "y_pred": test_info["y_pred"],
                 "label_to_index": test_info["label_to_index"],
-                "features_path": features_info["features_path"],
+                "model_features_path":
+                    features_info["features_path"],
+                "visualization_features_path":
+                    features_info["converted_features_path"],
                 "model_checkpoint_path":
                     model_info["checkpoint_path"],
                 "additional_info": run_result.additional_info

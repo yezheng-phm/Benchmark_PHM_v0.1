@@ -134,8 +134,8 @@ class Visualization:
         best_run,
         feature_layer
     ):
-        #--get the feature file path.
-        features_path = best_run["features_path"]
+        #--get the visualization feature file path.
+        features_path = best_run["visualization_features_path"]
 
         features_file_path = os.path.join(
             self.data_loader.experiment_data_path,

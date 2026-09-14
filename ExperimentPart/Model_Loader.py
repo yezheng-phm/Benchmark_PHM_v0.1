@@ -6,6 +6,10 @@
 from ExperimentPart.Models.Model_CNN import Model_CNN
 from ExperimentPart.Trainers.Trainer_CNN import Trainer_CNN
 
+from ExperimentPart.Models.Model_Transformer import Model_Transformer
+from ExperimentPart.Trainers.Trainer_Transformer import Trainer_Transformer
+
+
 class Model_Loader:
     """
     Load the model and trainer for the experiment.
@@ -48,7 +52,6 @@ class Model_Loader:
         self.experiment_data_path = experiment_data_path
 
 
-
 #--used to load models
     def load_model(self):
         """Load and instantiate the selected model."""
@@ -56,6 +59,15 @@ class Model_Loader:
         if self.model_name == "CNN":
 
             model = Model_CNN(
+                file_path=self.file_path,
+                num_classes=self.num_classes
+            )
+
+            return model
+
+        elif self.model_name == "Transformer":
+
+            model = Model_Transformer(
                 file_path=self.file_path,
                 num_classes=self.num_classes
             )
@@ -90,10 +102,28 @@ class Model_Loader:
 
             return trainer
 
+        elif self.model_name == "Transformer":
+
+            trainer = Trainer_Transformer(
+                model=model,
+                batch_size=self.batch_size,
+                epochs=self.epochs,
+                runs_num=self.runs_num,
+                learning_rate=self.learning_rate,
+                optimizer=self.optimizer,
+                criterion=self.criterion,
+                base_seed=self.base_seed,
+                experiment_name=self.experiment_name,
+                experiment_id=self.experiment_id,
+                experiment_data_path=self.experiment_data_path,
+                features_save_layers=self.features_save_layers
+            )
+
+            return trainer
+
         raise ValueError(
             f"Unsupported trainer for model: {self.model_name}"
         )
-
 
 
 #--load the model and trainer that have be created.

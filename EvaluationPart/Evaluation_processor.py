@@ -53,21 +53,24 @@ class Evaluation:
         precision = precision_score(
             y_true,
             y_pred,
-            average="macro"
+            average="macro",
+            zero_division=0
         )
 
         #--calculate macro recall.
         recall = recall_score(
             y_true,
             y_pred,
-            average="macro"
+            average="macro",
+            zero_division=0
         )
 
         #--calculate macro F1 score.
         f1 = f1_score(
             y_true,
             y_pred,
-            average="macro"
+            average="macro",
+            zero_division=0
         )
 
         run_metrics = {
