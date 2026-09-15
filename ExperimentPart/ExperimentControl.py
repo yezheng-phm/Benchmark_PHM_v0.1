@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
 #------------------model configuration--------------------------#
 
-    MODEL_NAME = "Transformer"
+    MODEL_NAME = "CNN"
 
     FILE_PATH = r"D:\Project\PHM_Data\SampledData\10000-1024-512-ex028-10Lables\sampled_data_20260910150414.pt"
     NUM_CLASSES = 10
@@ -25,8 +25,8 @@ if __name__ == "__main__":
     #-----------------trainer configuration-------------------------#
 
     BATCH_SIZE = 32
-    EPOCHS = 1
-    RUNS_NUM = 1
+    EPOCHS = 50
+    RUNS_NUM = 5
 
     LEARNING_RATE = 0.001
     OPTIMIZER = "Adam"
@@ -38,8 +38,8 @@ if __name__ == "__main__":
 
     #-----------------experiment configuration-------------------------#
 
-    EXPERIMENT_NAME = "Transformer_Test"
-    EXPERIMENT_ID = "03"
+    EXPERIMENT_NAME = "CNN_Test"
+    EXPERIMENT_ID = "1"
     EXPERIMENT_DATA_PATH = r"D:\Project\PHM_Data\ExperimentData\tests"
 
 

@@ -1,7 +1,10 @@
 #---------------------------------------------------------
-#--this file is a trainer for the Model_CNN, which is used to train the CNN model on the given dataset.
+#--this file is a trainer for the Model_CNN,
+#--which is used to train the CNN model
+#--on the given dataset.
 #---------------------------------------------------------
 
+from datetime import datetime
 import os
 import copy
 import time
@@ -10,21 +13,26 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from DataAdaptationPart.CNNDataAdapter import CNNDataAdapter
 from ExperimentPart.ExperimentResultContainer import (
     ExperimentResultContainer,
     EpochResult
 )
+from ExperimentPart.Models.Model_CNN import Model_CNN
+
 
 class Trainer_CNN:
     """
     A trainer class for the Model_CNN model.
-    """    
+    """
+
     def __init__(
         self,
-        model,
+        file_path,
         batch_size,
         epochs,
         runs_num,
+        num_classes,
         learning_rate,
         optimizer,
         criterion,
@@ -32,9 +40,8 @@ class Trainer_CNN:
         experiment_name,
         experiment_id,
         experiment_data_path,
-        features_save_layers
+        features_save_layers=None
     ):
-        self.model = model
         self.batch_size = batch_size
         self.epochs = epochs
         self.runs_num = runs_num
@@ -44,34 +51,35 @@ class Trainer_CNN:
         self.criterion = criterion
         self.criterion_instance = None
         self.base_seed = base_seed
-        self.features_save_layers = features_save_layers
+        self.num_classes = num_classes
 
-#--create a layers names registry mapping table with the input model.
-        self.feature_registry = self._get_feature_registry()
-
-#--verify the input layers name that user wants to extract features is legal or not.
-        self.features_save_layers = (
-            self._validate_input_layers_name_protocol(
-                self.features_save_layers
-            )
+        #--create CNN adapter.
+        self.data_adapter = CNNDataAdapter(
+            file_path
         )
 
-#--validate the experiment_id to ensure it is a digit and format it accordingly.
-        if not str(experiment_id).isdigit():
-            raise ValueError("Experiment_ID is not a digit and must be a digit!")
-        
-#--format the experiment_id to have a prefix "Ex" and be zero-padded to three digits.
-        experiment_id = int(experiment_id)
-        experiment_id = f"Ex{experiment_id:03d}"
+        #--set the default feature layers to save.
+        if features_save_layers is None:
+            features_save_layers = ["all"]
 
-#--validate the experiment data path to ensure it is not empty.
-        if not experiment_data_path:
-            raise ValueError("ExperimentDataPath cannot be empty. Please provide the experiment data save path!")
-        self.experiment_name = experiment_name
-        self.experiment_id = experiment_id
-        self.experiment_data_path = experiment_data_path
+        self.features_save_layers = features_save_layers
 
-#--create a method to build the optimizer according to the configuration.
+        #--validate the basic experiment inputs.
+        (
+            self.experiment_name,
+            self.experiment_id,
+            self.experiment_data_path
+        ) = self._validate_basic_inputs(
+            experiment_name,
+            experiment_id,
+            experiment_data_path
+        )
+
+
+
+#--------------------------------external method logic area----------------------------------------------
+
+    #--create a method to build the optimizer according to the configuration.
     def _build_optimizer(self):
         """Build the optimizer according to the configuration."""
 
@@ -85,7 +93,8 @@ class Trainer_CNN:
             f"Unsupported optimizer: {self.optimizer}"
         )
 
-#--create a method to build the loss function according to the configuration.
+
+    #--create a method to build the loss function according to the configuration.
     def _build_criterion(self):
         """Build the loss function according to the configuration."""
 
@@ -96,94 +105,137 @@ class Trainer_CNN:
             f"Unsupported criterion: {self.criterion}"
         )
 
-#--create a method to train the model for one epoch.
-    def _train_one_epoch(self, train_loader):
-        """Train the model for one epoch."""
 
-        self.model.train()
+    #--validate the basic experiment inputs.
+    def _validate_basic_inputs(
+        self,
+        experiment_name,
+        experiment_id,
+        experiment_data_path
+    ):
+        """Validate and standardize the basic experiment inputs."""
 
-        total_loss = 0.0
-        correct = 0
-        total = 0
+        #--validate the experiment ID.
+        if not str(experiment_id).isdigit():
+            raise ValueError(
+                "Experiment_ID is not a digit and must be a digit!"
+            )
 
-        #--start the timer for the epoch training time.
-        start_time = time.time()
+        #--validate the experiment name.
+        if not experiment_name:
+            raise ValueError(
+                "Experiment_Name cannot be empty. "
+                "Please provide the experiment name!"
+            )
 
-        for X, y in train_loader:
+        #--validate the experiment data path.
+        if not experiment_data_path:
+            raise ValueError(
+                "ExperimentDataPath cannot be empty. "
+                "Please provide the experiment data save path!"
+            )
 
-            self.optimizer_instance.zero_grad()
+        #--format the experiment ID.
+        experiment_id = int(experiment_id)
+        experiment_id = f"Ex{experiment_id:03d}"
 
-            output = self.model(X)
-
-            loss = self.criterion_instance(output, y)
-
-            loss.backward()
-
-            self.optimizer_instance.step()
-
-            total_loss += loss.item() * X.size(0)
-
-            predicted = output.argmax(dim=1)
-            correct += (predicted == y).sum().item()
-            total += y.size(0)
-
-        epoch_loss = total_loss / total
-        epoch_accuracy = correct / total
-
-        #--get the training time for one epoch.
-        epoch_train_time = time.time() - start_time
-
-        return epoch_loss, epoch_accuracy, epoch_train_time
+        return (
+            experiment_name,
+            experiment_id,
+            experiment_data_path
+        )
 
 
+    #--get the layer names from the input CNN model.
+    def _get_model_layer_name_list(self):
+        """Get the valid feature layer names from the CNN model."""
 
-#--used for verifying the model on the validation dataset for one epoch.
-    def _validate_one_epoch(self, validation_loader):
-        """Validate the model for one epoch."""
+        model_layer_name_list = []
 
-        self.model.eval()
+        #--automatically detect every Conv1d layer.
+        conv_layer_index = 1
 
-        total_loss = 0.0
-        correct = 0
-        total = 0
+        for layer in self.model.feature_extractor:
 
-        with torch.no_grad():
+            if isinstance(layer, nn.Conv1d):
 
-            for X, y in validation_loader:
+                model_layer_name_list.append(
+                    f"conv{conv_layer_index}"
+                )
 
-                output = self.model(X)
+                conv_layer_index += 1
 
-                loss = self.criterion_instance(output, y)
+        #--add the global pooling and classifier layers.
+        model_layer_name_list.extend([
+            "globalpool",
+            "classifier",
+            "all"
+        ])
 
-                total_loss += loss.item() * X.size(0)
+        return model_layer_name_list
 
-                predicted = output.argmax(dim=1)
-                correct += (predicted == y).sum().item()
-                total += y.size(0)
 
-        epoch_loss = total_loss / total
-        epoch_accuracy = correct / total
+    #--validate the input feature layer names according to
+    #--the CNN layer name protocol.
+    def _validate_input_layers_name_protocol(self, input_layers):
+        """Validate and standardize the input feature layer names."""
 
-        return epoch_loss, epoch_accuracy
+        #--validate the input type.
+        if not isinstance(input_layers, list):
+            raise TypeError(
+                "Features_Save_Layers must be a list."
+            )
 
-    
-#--create DataLoaders for the training, validation, and test datasets.
+        standardized_layers = []
+
+        #--validate every input layer name.
+        for layer_name in input_layers:
+
+            #--validate the layer name type.
+            if not isinstance(layer_name, str):
+                raise TypeError(
+                    "Each feature layer name must be a string."
+                )
+
+            #--standardize the layer name.
+            layer_name = layer_name.lower()
+
+            #--validate whether the input layer name
+            #--exists in the actual model layer name list.
+            if layer_name not in self.model_layer_name_list:
+                raise ValueError(
+                    f"Invalid feature layer name: '{layer_name}'. "
+                    f"Available feature layers: "
+                    f"{self.model_layer_name_list}"
+                )
+
+            standardized_layers.append(layer_name)
+
+        #--remove duplicated layer names while preserving their order.
+        standardized_layers = list(
+            dict.fromkeys(standardized_layers)
+        )
+
+        return standardized_layers
+
+
+    #--create DataLoaders for the training, validation, and test datasets.
     def _build_dataloader(self):
         """Build DataLoaders for training, validation, and test datasets."""
 
         train_dataset = TensorDataset(
-            self.model.train_X,
-            self.model.train_y
+            self.data_adapter.train_X,
+            self.data_adapter.train_y
         )
 
         validation_dataset = TensorDataset(
-            self.model.validation_X,
-            self.model.validation_y
+            self.data_adapter.validation_X,
+            self.data_adapter.validation_y
         )
 
         test_dataset = TensorDataset(
-            self.model.test_X,
-            self.model.test_y
+            self.data_adapter.test_X,
+            self.data_adapter.test_y
         )
 
         train_loader = DataLoader(
@@ -204,19 +256,148 @@ class Trainer_CNN:
             shuffle=False
         )
 
-        return train_loader, validation_loader, test_loader
+        return (
+            train_loader,
+            validation_loader,
+            test_loader
+        )
 
 
+    #--create a method for showing process.
+    def _create_epoch_progress(
+        self,
+        train_loader,
+        epoch,
+        run_id
+    ):
+        return tqdm(
+            train_loader,
+            desc=f"Run [{run_id}] | Epoch [{epoch}/{self.epochs}]",
+            leave=True,
+            colour="green",
+            bar_format="{desc} |{bar:50}| {percentage:3.0f}%",
+            ascii="□■"
+        )
 
-#--core train logic for training the model for one run and selecting the best epoch based on validation performance.
-    #--core train logic for training the model for one run and selecting the best epoch based on validation performance.
+
+    #--create a method to train the model for one epoch.
+    def _train_one_epoch(
+        self,
+        train_loader,
+        epoch,
+        run_id
+    ):
+        """Train the model for one epoch."""
+
+        self.model.train()
+
+        total_loss = 0.0
+        correct = 0
+        total = 0
+
+        #--start the timer for the epoch training time.
+        start_time = time.time()
+
+        epoch_progress = self._create_epoch_progress(
+            train_loader,
+            epoch,
+            run_id
+        )
+
+        for X, y in epoch_progress:
+
+            self.optimizer_instance.zero_grad()
+
+            output = self.model(X)
+
+            loss = self.criterion_instance(
+                output,
+                y
+            )
+
+            loss.backward()
+
+            self.optimizer_instance.step()
+
+            total_loss += loss.item() * X.size(0)
+
+            predicted = output.argmax(dim=1)
+
+            correct += (
+                predicted == y
+            ).sum().item()
+
+            total += y.size(0)
+
+            epoch_loss = total_loss / total
+            epoch_accuracy = correct / total
+
+            epoch_progress.set_postfix(
+                acc=f"{epoch_accuracy:.3f}",
+                loss=f"{epoch_loss:.3f}"
+            )
+
+        epoch_loss = total_loss / total
+        epoch_accuracy = correct / total
+
+        #--get the training time for one epoch.
+        epoch_train_time = time.time() - start_time
+
+        return (
+            epoch_loss,
+            epoch_accuracy,
+            epoch_train_time
+        )
+
+
+    #--verify the model on the validation dataset for one epoch.
+    def _validate_one_epoch(self, validation_loader):
+        """Validate the model for one epoch."""
+
+        self.model.eval()
+
+        total_loss = 0.0
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+
+            for X, y in validation_loader:
+
+                output = self.model(X)
+
+                loss = self.criterion_instance(
+                    output,
+                    y
+                )
+
+                total_loss += loss.item() * X.size(0)
+
+                predicted = output.argmax(dim=1)
+
+                correct += (
+                    predicted == y
+                ).sum().item()
+
+                total += y.size(0)
+
+        epoch_loss = total_loss / total
+        epoch_accuracy = correct / total
+
+        return (
+            epoch_loss,
+            epoch_accuracy
+        )
+
+
+    #--core train logic for training the model for one run
+    #--and selecting the best epoch based on validation performance.
     def _train_one_run(
         self,
         train_loader,
         validation_loader,
         run_id
     ):
-        """Train the model for one run and select the best epoch based on validation performance."""
 
         epoch_info_list = []
 
@@ -226,30 +407,36 @@ class Trainer_CNN:
         best_epoch_train_time = None
         best_model_state = None
 
-
         #--build the optimizer for the current run.
         self.optimizer_instance = self._build_optimizer()
 
         #--build the loss function for the current run.
         self.criterion_instance = self._build_criterion()
 
+        #--record the training start time.
+        train_start_time = datetime.now()
 
-        #--create the progress bar for the current run.
-        epoch_progress = tqdm(
-            range(1, self.epochs + 1),
-            desc=f"Run {run_id}/{self.runs_num}",
-            leave=True
+        print("=" * 60)
+        print(
+            f"Run [{run_id}] Training Started: "
+            f"{train_start_time.strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        print("-" * 60)
 
-
-        for epoch in epoch_progress:
+        for epoch in range(1, self.epochs + 1):
 
             epoch_train_loss, epoch_train_accuracy, epoch_train_time = (
-                self._train_one_epoch(train_loader)
+                self._train_one_epoch(
+                    train_loader,
+                    epoch,
+                    run_id
+                )
             )
 
             epoch_validation_loss, epoch_validation_accuracy = (
-                self._validate_one_epoch(validation_loader)
+                self._validate_one_epoch(
+                    validation_loader
+                )
             )
 
             epoch_result = EpochResult(
@@ -263,34 +450,32 @@ class Trainer_CNN:
 
             epoch_info_list.append(epoch_result)
 
-
-            #--update the training progress.
-            epoch_progress.set_postfix(
-                train_loss=f"{epoch_train_loss:.3f}",
-                val_acc=f"{epoch_validation_accuracy:.3f}"
-            )
-
-
+            #--select the first epoch as the initial best epoch.
             if selected_epoch_num is None:
 
                 selected_epoch_num = epoch
                 best_validation_accuracy = epoch_validation_accuracy
                 best_validation_loss = epoch_validation_loss
                 best_epoch_train_time = epoch_train_time
+
                 best_model_state = copy.deepcopy(
                     self.model.state_dict()
                 )
 
+            #--select the current epoch when validation accuracy is better.
             elif epoch_validation_accuracy > best_validation_accuracy:
 
                 selected_epoch_num = epoch
                 best_validation_accuracy = epoch_validation_accuracy
                 best_validation_loss = epoch_validation_loss
                 best_epoch_train_time = epoch_train_time
+
                 best_model_state = copy.deepcopy(
                     self.model.state_dict()
                 )
 
+            #--when validation accuracy is equal,
+            #--select the epoch with lower validation loss.
             elif (
                 epoch_validation_accuracy == best_validation_accuracy
                 and epoch_validation_loss < best_validation_loss
@@ -300,10 +485,13 @@ class Trainer_CNN:
                 best_validation_accuracy = epoch_validation_accuracy
                 best_validation_loss = epoch_validation_loss
                 best_epoch_train_time = epoch_train_time
+
                 best_model_state = copy.deepcopy(
                     self.model.state_dict()
                 )
 
+            #--when validation accuracy and loss are equal,
+            #--select the epoch with shorter training time.
             elif (
                 epoch_validation_accuracy == best_validation_accuracy
                 and epoch_validation_loss == best_validation_loss
@@ -312,21 +500,45 @@ class Trainer_CNN:
 
                 selected_epoch_num = epoch
                 best_epoch_train_time = epoch_train_time
+
                 best_model_state = copy.deepcopy(
                     self.model.state_dict()
                 )
 
-
+        #--restore the selected best model state.
         self.model.load_state_dict(
             best_model_state
         )
 
-        return epoch_info_list, selected_epoch_num
+        #--record the training end time.
+        train_end_time = datetime.now()
+
+        #--calculate the total training time in minutes.
+        train_duration = train_end_time - train_start_time
+        train_duration_minutes = round(
+            train_duration.total_seconds() / 60
+        )
+
+        print("-" * 60)
+        print(
+            f"Run [{run_id}] Training Finished: "
+            f"{train_end_time.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        print(
+            f"Run [{run_id}] Training Time: "
+            f"{train_duration_minutes} min"
+        )
+        print("=" * 60)
+
+        return (
+            epoch_info_list,
+            selected_epoch_num
+        )
 
 
-    #--create a method to test the selected model on the test dataset.
+    #--core train logic for testing the model for one run.
     def _test_one_run(self, test_loader):
-        """Test the selected model on the test dataset and return the test information."""
+        """Test the model using the selected best model."""
 
         self.model.eval()
 
@@ -337,23 +549,90 @@ class Trainer_CNN:
         y_true = []
         y_pred = []
 
+        #--store the raw features temporarily for feature extraction.
+        raw_features = {}
+
         with torch.no_grad():
 
             for X, y in test_loader:
 
-                output = self.model(X)
+                #--process the input through the CNN feature extractor.
+                x = X
 
-                loss = self.criterion_instance(output, y)
+                conv_layer_index = 1
+
+                for layer in self.model.feature_extractor:
+
+                    x = layer(x)
+
+                    #--record the output of every Conv1d layer.
+                    if isinstance(layer, nn.Conv1d):
+
+                        layer_name = f"conv{conv_layer_index}"
+
+                        raw_features.setdefault(
+                            layer_name,
+                            []
+                        ).append(
+                            x.cpu()
+                        )
+
+                        conv_layer_index += 1
+
+                #--global average pooling.
+                x = self.model._global_average_pooling(x)
+
+                raw_features.setdefault(
+                    "globalpool",
+                    []
+                ).append(
+                    x.cpu()
+                )
+
+                #--classifier.
+                output = self.model.classifier(x)
+
+                raw_features.setdefault(
+                    "classifier",
+                    []
+                ).append(
+                    output.cpu()
+                )
+
+                #--calculate test loss and accuracy.
+                loss = self.criterion_instance(
+                    output,
+                    y
+                )
 
                 total_loss += loss.item() * X.size(0)
 
                 predicted = output.argmax(dim=1)
 
-                correct += (predicted == y).sum().item()
+                correct += (
+                    predicted == y
+                ).sum().item()
+
                 total += y.size(0)
 
-                y_true.extend(y.cpu().tolist())
-                y_pred.extend(predicted.cpu().tolist())
+                y_true.extend(
+                    y.cpu().tolist()
+                )
+
+                y_pred.extend(
+                    predicted.cpu().tolist()
+                )
+
+        #--combine the raw features from all batches.
+        for layer_name in raw_features:
+
+            raw_features[layer_name] = torch.cat(
+                raw_features[layer_name],
+                dim=0
+            )
+
+        #--temporarily store the raw features for _get_features_info().
+        self.raw_features = raw_features
 
         test_loss = total_loss / total
         test_accuracy = correct / total
@@ -363,32 +642,168 @@ class Trainer_CNN:
             "test_accuracy": test_accuracy,
             "y_true": y_true,
             "y_pred": y_pred,
-            "label_to_index": self.model.label_to_index
-        }    
+            "label_to_index": self.data_adapter.label_to_index
+        }
 
 
-#--create a method to save the selected model of the current run and return its information.
-    def _get_model_info(self, run_id, selected_epoch_num):
+    #--get the mapping for every layer according to the CNN model.
+    def _get_feature_registry(self):
+        """Build the feature registry for the CNN model."""
+
+        feature_registry = {}
+
+        conv_layer_index = 1
+
+        #--automatically register every Conv1d layer.
+        for layer in self.model.feature_extractor:
+
+            if isinstance(layer, nn.Conv1d):
+
+                feature_registry[
+                    f"conv{conv_layer_index}"
+                ] = layer
+
+                conv_layer_index += 1
+
+        feature_registry["globalpool"] = (
+            self.model._global_average_pooling
+        )
+
+        feature_registry["classifier"] = (
+            self.model.classifier
+        )
+
+        return feature_registry
+
+
+    #--convert selected features into representations suitable for feature visualization.
+    def _convert_features_for_visualization(self, features):
+        """Convert CNN features into representations suitable for feature visualization."""
+
+        converted_features = {}
+
+        for layer_name, feature in features.items():
+
+            if layer_name.startswith("conv"):
+
+                #--mean over the sequence dimension.
+                converted_features[layer_name] = (
+                    feature.mean(dim=2)
+                )
+
+            else:
+
+                converted_features[layer_name] = feature
+
+        return converted_features
+
+
+    #--get the features from the model layers from selected layer.
+    def _get_features_info(
+        self,
+        run_id,
+        selected_epoch_num
+    ):
+        """Convert and save the selected model features."""
+
+        #--get the raw features temporarily stored by _test_one_run().
+        raw_features = self.raw_features
+
+        #--determine the feature layers to save.
+        if "all" in self.features_save_layers:
+
+            feature_layers = [
+                layer_name
+                for layer_name in self.feature_registry
+            ]
+
+        else:
+
+            feature_layers = self.features_save_layers.copy()
+
+        #--select the required raw features according to the feature layers.
+        selected_features = {}
+
+        for layer_name in feature_layers:
+
+            selected_features[layer_name] = (
+                raw_features[layer_name]
+            )
+
+        #--convert the selected features for visualization.
+        converted_features = (
+            self._convert_features_for_visualization(
+                selected_features
+            )
+        )
+
+        #--create the feature save directory.
+        features_dir = os.path.join(
+            self.experiment_data_path,
+            f"{self.experiment_name}_{self.experiment_id}",
+            "Features",
+            f"Run_{run_id:03d}"
+        )
+
+        os.makedirs(
+            features_dir,
+            exist_ok=True
+        )
+
+        #--save the converted features.
+        converted_features_path = os.path.join(
+            features_dir,
+            "converted_for_visualization_features.pt"
+        )
+
+        torch.save(
+            converted_features,
+            converted_features_path
+        )
+
+        #--get the relative converted feature path.
+        relative_converted_features_path = os.path.relpath(
+            converted_features_path,
+            self.experiment_data_path
+        )
+
+        #--release the temporary raw features.
+        self.raw_features = None
+
+        return {
+            "converted_features_path": relative_converted_features_path,
+            "selected_model_epoch_num": selected_epoch_num
+        }
+
+
+    #--create a method to save the selected model of the current run
+    #--and return its information.
+    def _get_model_info(
+        self,
+        run_id,
+        selected_epoch_num
+    ):
         """Save the selected model of the current run and return its information."""
 
-        experiment_name = f"{self.experiment_name}_{self.experiment_id}"
+        experiment_name = (
+            f"{self.experiment_name}_{self.experiment_id}"
+        )
 
         experiment_dir = os.path.join(
             self.experiment_data_path,
             experiment_name
         )
 
-        run_dir = os.path.join(
+        model_dir = os.path.join(
             experiment_dir,
+            "Models",
             f"Run_{run_id:03d}"
         )
 
-        model_dir = os.path.join(
-            run_dir,
-            "model"
+        os.makedirs(
+            model_dir,
+            exist_ok=True
         )
-
-        os.makedirs(model_dir, exist_ok=True)
 
         checkpoint_path = os.path.join(
             model_dir,
@@ -411,229 +826,35 @@ class Trainer_CNN:
         }
 
 
-#--create the feature registry for the current CNN model.
-    def _get_feature_registry(self):
-        """Create the feature registry according to the actual CNN model layers."""
-
-        feature_registry = {}
-
-        conv_id = 1000
-        pool_id = 2000
-
-        conv_num = 0
-        pool_num = 0
-
-        for layer in self.model.model:
-
-            if isinstance(layer, nn.Conv1d):
-                feature_registry[conv_id] = {
-                    "name": f"conv{conv_num + 1}",
-                    "layer": layer
-                }
-
-                conv_id += 1
-                conv_num += 1
-
-            elif isinstance(layer, nn.MaxPool1d):
-                feature_registry[pool_id] = {
-                    "name": f"pool{pool_num + 1}",
-                    "layer": layer
-                }
-
-                pool_id += 1
-                pool_num += 1
-
-            elif isinstance(layer, nn.AdaptiveAvgPool1d):
-                feature_registry[9000] = {
-                    "name": "globalpool",
-                    "layer": layer
-                }
-
-        feature_registry[10000] = {
-            "name": "all",
-            "layer": None
-        }
-
-        return feature_registry
-
-
-
-#--validate the input feature layer names according to the CNN layer name protocol.
-    def _validate_input_layers_name_protocol(self, input_layers):
-        """Validate and standardize the input feature layer names."""
-
-        if not isinstance(input_layers, list):
-            raise TypeError(
-                "Features_Save_Layers must be a list."
-            )
-
-        standardized_layers = []
-
-        valid_layer_names = {
-            info["name"]
-            for info in self.feature_registry.values()
-            if info["name"] != "all"
-        }
-
-        for layer_name in input_layers:
-
-            if not isinstance(layer_name, str):
-                raise TypeError(
-                    "Each feature layer name must be a string."
-                )
-
-            layer_name = layer_name.lower()
-
-            if layer_name == "all":
-                standardized_layers.append(layer_name)
-                continue
-
-            if layer_name not in valid_layer_names:
-                raise ValueError(
-                    f"Invalid feature layer name: '{layer_name}'. "
-                    f"Available feature layers: "
-                    f"{sorted(valid_layer_names)}."
-                )
-
-            standardized_layers.append(layer_name)
-
-        return list(dict.fromkeys(standardized_layers))
-
-
-
-
-#--get the features from the model layers that you wanted. 
-#--feature shape is represented as samples_num*out_channel*feature_points
-
-    def _get_features_info(self, test_loader, run_id, selected_epoch_num):
-        """Extract and save the selected model features from the test dataset."""
-
-        self.model.eval()
-
-        features = {}
-
-        if "all" in self.features_save_layers:
-
-            selected_layers = [
-                info["name"]
-                for layer_id, info in self.feature_registry.items()
-                if info["name"] != "all"
-            ]
-
-        else:
-
-            selected_layers = self.features_save_layers
-
-        for layer_name in selected_layers:
-
-            feature_id = None
-
-            for layer_id, info in self.feature_registry.items():
-
-                if info["name"] == layer_name:
-
-                    feature_id = layer_id
-                    break
-
-            features[layer_name] = {
-                "feature_id": feature_id,
-                "data": []
-            }
-
-        hooks = []
-        feature_outputs = {}
-
-        for layer_name in selected_layers:
-
-            for layer_id, info in self.feature_registry.items():
-
-                if info["name"] == layer_name:
-
-                    feature_outputs[layer_name] = []
-
-                    hook = info["layer"].register_forward_hook(
-                        lambda module, input, output, name=layer_name:
-                            feature_outputs[name].append(output.detach())
-                    )
-
-                    hooks.append(hook)
-
-                    break
-
-        with torch.no_grad():
-
-            for X, y in test_loader:
-
-                self.model(X)
-
-        for hook in hooks:
-            hook.remove()
-
-        for layer_name in feature_outputs:
-
-            features[layer_name]["data"] = torch.cat(
-                feature_outputs[layer_name],
-                dim=0
-            )
-
-        features_dir = os.path.join(
-            self.experiment_data_path,
-            f"{self.experiment_name}_{self.experiment_id}",
-            f"Run_{run_id:03d}",
-            "features"
-        )
-
-        os.makedirs(features_dir, exist_ok=True)
-
-        features_path = os.path.join(
-            features_dir,
-            "selected_model_features.pt"
-        )
-
-        torch.save(features, features_path)
-
-        relative_features_path = os.path.relpath(
-            features_path,
-            self.experiment_data_path
-        )
-
-        return {
-            "features_path": relative_features_path,
-            "selected_model_epoch_num": selected_epoch_num
-        }
-
-
-#--reset the model parameters for a new run.
-    def _reset_model_parameters(self):
-        """Reset all model parameters for a new run."""
-
-        for layer in self.model.model:
-
-            if hasattr(layer, "reset_parameters"):
-                layer.reset_parameters()
-
-
-#--give the input random_seed for Pytorch.
-    def _set_random_seed(self, seed):
+    #--create a method to set the random seed for the current run.
+    def _set_random_seed(self, random_seed):
         """Set the random seed for the current run."""
 
-        torch.manual_seed(seed)
+        torch.manual_seed(random_seed)
 
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-            torch.cuda.manual_seed_all(seed)
+
+            torch.cuda.manual_seed(random_seed)
+            torch.cuda.manual_seed_all(random_seed)
 
 
-#--save all experiment results to the experiment result file.
+    #--create a method to save all experiment results.
     def _save_experiment_results(self, all_runs_info):
-        """Save all run results of the experiment."""
+        """Save all experiment results."""
 
-        experiment_dir = os.path.join(
-            self.experiment_data_path,
+        experiment_name = (
             f"{self.experiment_name}_{self.experiment_id}"
         )
 
-        os.makedirs(experiment_dir, exist_ok=True)
+        experiment_dir = os.path.join(
+            self.experiment_data_path,
+            experiment_name
+        )
+
+        os.makedirs(
+            experiment_dir,
+            exist_ok=True
+        )
 
         experiment_results_path = os.path.join(
             experiment_dir,
@@ -645,9 +866,10 @@ class Trainer_CNN:
             experiment_results_path
         )
 
+        return experiment_results_path
 
-#--totally operate train process with all run times .
 
+    #--create a method to train the model for all runs.
     def _total_train(self):
         """Train the model for all runs."""
 
@@ -659,19 +881,46 @@ class Trainer_CNN:
             self._build_dataloader()
         )
 
-        #--get every run information
+        #--get every run information.
         for run_id in range(1, self.runs_num + 1):
 
-            self._set_random_seed(random_seed)
+            #--set the random seed for the current run.
+            self._set_random_seed(
+                random_seed
+            )
 
-            #--reset model parameters for the current run.
-            self._reset_model_parameters()
+            #--create a new model for the current run.
+            self.model = Model_CNN(
+                num_classes=self.num_classes
+            )
+
+            #--initialize feature extraction information only for the first run.
+            if run_id == 1:
+
+                #--get the layer names from the input CNN model.
+                self.model_layer_name_list = (
+                    self._get_model_layer_name_list()
+                )
+
+                #--verify the input layers name that user wants to extract features.
+                self.features_save_layers = (
+                    self._validate_input_layers_name_protocol(
+                        self.features_save_layers
+                    )
+                )
+
+                #--build the feature registry.
+                self.feature_registry = (
+                    self._get_feature_registry()
+                )
 
             #--get every epoch information and selected epoch num.
-            epoch_info_list, selected_epoch_num = self._train_one_run(
-                train_loader,
-                validation_loader,
-                run_id
+            epoch_info_list, selected_epoch_num = (
+                self._train_one_run(
+                    train_loader,
+                    validation_loader,
+                    run_id
+                )
             )
 
             #--get the selected model information.
@@ -680,16 +929,15 @@ class Trainer_CNN:
                 selected_epoch_num
             )
 
-            #--get the selected model features.
-            features_info = self._get_features_info(
-                test_loader,
-                run_id,
-                selected_epoch_num
-            )
-
             #--get the test information.
             test_info = self._test_one_run(
                 test_loader
+            )
+
+            #--get the selected model features.
+            features_info = self._get_features_info(
+                run_id,
+                selected_epoch_num
             )
 
             #--get the experiment information for every run.
@@ -700,7 +948,6 @@ class Trainer_CNN:
                 "random_seed": random_seed
             }
 
-            #--collect all information to create ExperimentResultContainer objective.
             run_result = ExperimentResultContainer(
                 exper_info=exper_info,
                 epoch_info_list=epoch_info_list,
@@ -710,16 +957,20 @@ class Trainer_CNN:
                 additional_info=None
             )
 
-            all_runs_info.append(run_result)
+            all_runs_info.append(
+                run_result
+            )
+
             random_seed += 1
 
-        #--save all experiment results.
-        self._save_experiment_results(all_runs_info)
+        self._save_experiment_results(
+            all_runs_info
+        )
 
         return all_runs_info
 
 
-#--Run the complete training experiment.
+    #--Run the complete training experiment.
     def run(self):
         """Run the complete training experiment."""
 

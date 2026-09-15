@@ -14,8 +14,8 @@ from EvaluationPart.Evaluation_processor import (
 
 
 data_loader = ExperimentDataLoader(
-    experiment_name="Transformer_Test",
-    experiment_id="3",
+    experiment_name="CNN_Test",
+    experiment_id="1",
     experiment_data_path=r"D:\Project\PHM_Data\ExperimentData\tests"
 )
 
