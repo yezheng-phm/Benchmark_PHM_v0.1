@@ -3,16 +3,13 @@
 #---------------------------------------------------------------
 
 
-from ExperimentPart.Models.Model_CNN import Model_CNN
 from ExperimentPart.Trainers.Trainer_CNN import Trainer_CNN
-
-from ExperimentPart.Models.Model_Transformer import Model_Transformer
 from ExperimentPart.Trainers.Trainer_Transformer import Trainer_Transformer
 
 
 class Model_Loader:
     """
-    Load the model and trainer for the experiment.
+    Load the trainer for the selected model.
     """
 
     def __init__(
@@ -52,41 +49,15 @@ class Model_Loader:
         self.experiment_data_path = experiment_data_path
 
 
-#--used to load models
-    def load_model(self):
-        """Load and instantiate the selected model."""
-
-        if self.model_name == "CNN":
-
-            model = Model_CNN(
-                file_path=self.file_path,
-                num_classes=self.num_classes
-            )
-
-            return model
-
-        elif self.model_name == "Transformer":
-
-            model = Model_Transformer(
-                file_path=self.file_path,
-                num_classes=self.num_classes
-            )
-
-            return model
-
-        raise ValueError(
-            f"Unsupported model: {self.model_name}"
-        )
-
-
 #--used to load trainers
-    def load_trainer(self, model):
+    def load_trainer(self):
         """Load and instantiate the selected trainer."""
 
         if self.model_name == "CNN":
 
             trainer = Trainer_CNN(
-                model=model,
+                file_path=self.file_path,
+                num_classes=self.num_classes,
                 batch_size=self.batch_size,
                 epochs=self.epochs,
                 runs_num=self.runs_num,
@@ -105,7 +76,8 @@ class Model_Loader:
         elif self.model_name == "Transformer":
 
             trainer = Trainer_Transformer(
-                model=model,
+                file_path=self.file_path,
+                num_classes=self.num_classes,
                 batch_size=self.batch_size,
                 epochs=self.epochs,
                 runs_num=self.runs_num,
@@ -126,22 +98,20 @@ class Model_Loader:
         )
 
 
-#--load the model and trainer that have be created.
+#--load the trainer that has been created.
     def load(self):
-        """Load the model and trainer."""
+        """Load the trainer."""
 
-        model = self.load_model()
+        trainer = self.load_trainer()
 
-        trainer = self.load_trainer(model)
-
-        return model, trainer
+        return trainer
 
 
 #--used to run the experiment
     def run(self):
         """Run the experiment."""
 
-        model, trainer = self.load()
+        trainer = self.load()
 
         results = trainer.run()
 

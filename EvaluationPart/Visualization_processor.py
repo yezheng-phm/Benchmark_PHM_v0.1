@@ -149,28 +149,21 @@ class Visualization:
         )
 
         #--get the specified feature layer.
-        feature_data = features[feature_layer]["data"]
+        feature_data = features[feature_layer]
 
         return feature_data
 
 
     #--prepare the feature data for t-SNE.
-    #--keep the sample dimension and flatten all remaining dimensions.
     def _prepare_features(
-        self,
-        feature_data
-    ):
+            self,
+            feature_data
+        ):
 
-        #--flatten all dimensions except the sample dimension.
-        feature_data = feature_data.reshape(
-            feature_data.shape[0],
-            -1
-        )
+            #--convert the feature data to NumPy array.
+            feature_data = feature_data.detach().cpu().numpy()
 
-        #--convert the feature data to NumPy array.
-        feature_data = feature_data.detach().cpu().numpy()
-
-        return feature_data
+            return feature_data
 
 
     #--plot the t-SNE visualization of model features.
@@ -190,13 +183,33 @@ class Visualization:
             exist_ok=True
         )
 
+        print(
+            f"[Visualization] Feature output directory: "
+            f"{feature_output_dir}"
+        )
+
+        print(
+            f"[Visualization] Selected feature layers: "
+            f"{self.data_loader.plot_feature_layers}"
+        )
+
         #--get the labels of the best run.
         y_true = np.asarray(
             best_run["y_true"]
         )
 
+        print(
+            f"[Visualization] Number of test labels: "
+            f"{len(y_true)}"
+        )
+
         #--plot every selected feature layer.
         for feature_layer in self.data_loader.plot_feature_layers:
+
+            print(
+                f"[Visualization] Processing feature layer: "
+                f"{feature_layer}"
+            )
 
             #--get the feature data of the specified layer.
             feature_data = self._get_features(
@@ -204,9 +217,19 @@ class Visualization:
                 feature_layer
             )
 
+            print(
+                f"[Visualization] Raw feature shape: "
+                f"{feature_data.shape}"
+            )
+
             #--prepare the feature data for t-SNE.
             feature_data = self._prepare_features(
                 feature_data
+            )
+
+            print(
+                f"[Visualization] Prepared feature shape: "
+                f"{feature_data.shape}"
             )
 
             #--validate the consistency between
@@ -281,6 +304,11 @@ class Visualization:
                 output_filename
             )
 
+            print(
+                f"[Visualization] Saving feature plot to: "
+                f"{output_path}"
+            )
+
             #--save the figure.
             dpi = (
                 600
@@ -292,6 +320,10 @@ class Visualization:
                 output_path,
                 dpi=dpi,
                 bbox_inches="tight"
+            )
+
+            print(
+                f"[Visualization] Feature plot saved."
             )
 
             #--save PDF for publication output.

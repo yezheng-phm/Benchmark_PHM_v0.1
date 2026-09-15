@@ -15,9 +15,20 @@ from EvaluationPart.Visualization_processor import (
 #--create the experiment data loader.
 #---------------------------------------------------------
 
+
+import torch
+
+features_path = (
+    r"D:\Project\PHM_Data\ExperimentData\tests"
+    r"\Transformer_Test_Ex002"
+    r"\Features\Run_001"
+    r"\selected_model_features.pt"
+)
+
+
 data_loader = ExperimentDataLoader(
     experiment_name="Transformer_Test",
-    experiment_id=1,
+    experiment_id=2,
     experiment_data_path=r"D:\Project\PHM_Data\ExperimentData\tests"
 )
 

@@ -130,8 +130,8 @@ class Evaluation:
             )
 
             aggregated_metrics[metric_name] = {
-                "mean": metric_mean,
-                "std": metric_std
+                "mean": round(metric_mean, 3),
+                "std": round(metric_std, 3)
             }
 
         return aggregated_metrics

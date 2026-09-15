@@ -212,7 +212,6 @@ class ExperimentDataLoader:
         return plot_feature_layers
 
 
-
     #--validate the form and content of the experiment result data.
     def _validate_experiment_results(self):
 
@@ -523,7 +522,6 @@ class ExperimentDataLoader:
         """Validate the features information of every experiment result."""
 
         expected_keys = {
-            "features_path",
             "converted_features_path",
             "selected_model_epoch_num"
         }
@@ -547,14 +545,6 @@ class ExperimentDataLoader:
                     f"{sorted(expected_keys)}"
                 )
 
-            if not isinstance(
-                features_info["features_path"],
-                str
-            ):
-                raise TypeError(
-                    "features_info['features_path'] "
-                    "must be a string!"
-                )
 
             if not isinstance(
                 features_info["converted_features_path"],
@@ -645,6 +635,10 @@ class ExperimentDataLoader:
                 )
 
 
+    #--validata the epoch num from every run is the same，and if is the same with input parameter "EPOCH". 
+    #--def _validate_epoch_num_consistency(self):
+    #--------------------------------
+
     #--validate an optional numeric value.
     def _validate_optional_numeric(
         self,
@@ -664,7 +658,7 @@ class ExperimentDataLoader:
     #--construct the epoch-level view of experiment results.
     def _get_epoch_level_view(self):
 
-        # Get the maximum number of epochs among all runs.
+        #--get the maximum epoch number among all runs.
         max_epoch_num = max(
             epoch_info.epoch_num
             for run_result in self.experiment_results
@@ -682,81 +676,64 @@ class ExperimentDataLoader:
 
             for run_result in self.experiment_results:
 
-                # Find the epoch information for this run.
+                #--find the epoch information for the current run.
                 current_epoch_info = next(
                     (
                         epoch_info_item
-                        for epoch_info_item in run_result.epoch_info_list
+                        for epoch_info_item
+                        in run_result.epoch_info_list
                         if epoch_info_item.epoch_num == epoch_num
                     ),
                     None
                 )
 
-                # ---------------------------------------------------------
-                # The current run does not contain this epoch.
-                # ---------------------------------------------------------
-                if current_epoch_info is None:
+                #--check whether the current epoch contains valid metric information.
+                if (
+                    current_epoch_info.epoch_train_loss is None
+                    and current_epoch_info.epoch_train_accuracy is None
+                    and current_epoch_info.epoch_train_time is None
+                    and current_epoch_info.epoch_validation_loss is None
+                    and current_epoch_info.epoch_validation_accuracy is None
+                ):
 
                     epoch_info["runs"].append({
-                        "run_id": run_result.exper_info["run_id"],
+                        "run_id":
+                            run_result.exper_info["run_id"],
                         "is_exist": False,
                         "train_loss": None,
                         "train_accuracy": None,
                         "train_time": None,
-                        "valid_loss": None,
-                        "valid_accuracy": None,
-                        "valid_time": None
+                        "validation_loss": None,
+                        "validation_accuracy": None
                     })
 
                     continue
 
-                # ---------------------------------------------------------
-                # The current run contains this epoch.
-                #
-                # Keep the same None-safe logic as _get_run_level_view().
-                # ---------------------------------------------------------
+                #--the current run contains this epoch.
                 epoch_info["runs"].append({
-                    "run_id": run_result.exper_info["run_id"],
+                    "run_id":
+                        run_result.exper_info["run_id"],
                     "is_exist": True,
 
-                    "train_loss": (
-                        round(current_epoch_info.train_loss, 3)
-                        if current_epoch_info.train_loss is not None
-                        else None
-                    ),
+                    "train_loss":
+                        current_epoch_info.epoch_train_loss,
 
-                    "train_accuracy": (
-                        round(current_epoch_info.train_accuracy, 3)
-                        if current_epoch_info.train_accuracy is not None
-                        else None
-                    ),
+                    "train_accuracy":
+                        current_epoch_info.epoch_train_accuracy,
 
-                    "train_time": (
-                        round(current_epoch_info.train_time, 3)
-                        if current_epoch_info.train_time is not None
-                        else None
-                    ),
+                    "train_time":
+                        current_epoch_info.epoch_train_time,
 
-                    "valid_loss": (
-                        round(current_epoch_info.valid_loss, 3)
-                        if current_epoch_info.valid_loss is not None
-                        else None
-                    ),
+                    "validation_loss":
+                        current_epoch_info.epoch_validation_loss,
 
-                    "valid_accuracy": (
-                        round(current_epoch_info.valid_accuracy, 3)
-                        if current_epoch_info.valid_accuracy is not None
-                        else None
-                    ),
-
-                    "valid_time": (
-                        round(current_epoch_info.valid_time, 3)
-                        if current_epoch_info.valid_time is not None
-                        else None
-                    )
+                    "validation_accuracy":
+                        current_epoch_info.epoch_validation_accuracy
                 })
 
-            epoch_level_view.append(epoch_info)
+            epoch_level_view.append(
+                epoch_info
+            )
 
         return epoch_level_view
 
@@ -806,26 +783,16 @@ class ExperimentDataLoader:
 
                     current_epoch_info = {
                         "epoch_num": epoch_result.epoch_num,
-                        "train_accuracy": round(
+                        "train_accuracy":
                             epoch_result.epoch_train_accuracy,
-                            3
-                        ),
-                        "train_loss": round(
+                        "train_loss":
                             epoch_result.epoch_train_loss,
-                            3
-                        ),
-                        "validation_accuracy": round(
+                        "validation_accuracy":
                             epoch_result.epoch_validation_accuracy,
-                            3
-                        ),
-                        "validation_loss": round(
+                        "validation_loss":
                             epoch_result.epoch_validation_loss,
-                            3
-                        ),
-                        "train_time": round(
-                            epoch_result.epoch_train_time,
-                            3
-                        )
+                        "train_time":
+                            epoch_result.epoch_train_time
                     }
 
                 epoch_info.append(
@@ -841,9 +808,8 @@ class ExperimentDataLoader:
                     epoch_result.epoch_num
                     == selected_model_epoch_num
                 ):
-                    selected_epoch_train_time = round(
-                        epoch_result.epoch_train_time,
-                        3
+                    selected_epoch_train_time = (
+                        epoch_result.epoch_train_time
                     )
                     break
 
@@ -858,19 +824,13 @@ class ExperimentDataLoader:
                 "selected_epoch_train_time":
                     selected_epoch_train_time,
                 "epoch_info": epoch_info,
-                "test_loss": round(
+                "test_loss":
                     test_info["test_loss"],
-                    3
-                ),
-                "test_accuracy": round(
+                "test_accuracy":
                     test_info["test_accuracy"],
-                    3
-                ),
                 "y_true": test_info["y_true"],
                 "y_pred": test_info["y_pred"],
                 "label_to_index": test_info["label_to_index"],
-                "model_features_path":
-                    features_info["features_path"],
                 "visualization_features_path":
                     features_info["converted_features_path"],
                 "model_checkpoint_path":

@@ -13,10 +13,12 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
+from DataAdaptationPart.TransformerDataAdapter import TransformerDataAdapter
 from ExperimentPart.ExperimentResultContainer import (
     ExperimentResultContainer,
     EpochResult
 )
+from ExperimentPart.Models.Model_Transformer import Model_Transformer
 
 
 class Trainer_Transformer:
@@ -26,10 +28,11 @@ class Trainer_Transformer:
 
     def __init__(
         self,
-        model,
+        file_path,
         batch_size,
         epochs,
         runs_num,
+        num_classes,
         learning_rate,
         optimizer,
         criterion,
@@ -39,7 +42,6 @@ class Trainer_Transformer:
         experiment_data_path,
         features_save_layers = None
     ):
-        self.model = model
         self.batch_size = batch_size
         self.epochs = epochs
         self.runs_num = runs_num
@@ -49,22 +51,17 @@ class Trainer_Transformer:
         self.criterion = criterion
         self.criterion_instance = None
         self.base_seed = base_seed
+        self.num_classes = num_classes
 
+        #--create transformer adapter.
+        self.data_adapter = TransformerDataAdapter(
+            file_path
+        )
         #--set the default feature layers to save.
         if features_save_layers is None:
             features_save_layers = ["all"]
 
-        #--get the layer names from the input Transformer model.
-        self.model_layer_name_list = self._get_model_layer_name_list()
-
-        #--verify the input layers name that user wants to extract features.
-        self.features_save_layers = (
-            self._validate_input_layers_name_protocol(
-                features_save_layers
-            )
-        )
-
-        self.feature_registry = self._get_feature_registry()
+        self.features_save_layers = features_save_layers
 
         #--validate the basic experiment inputs.
         (
@@ -228,18 +225,18 @@ class Trainer_Transformer:
         """Build DataLoaders for training, validation, and test datasets."""
 
         train_dataset = TensorDataset(
-            self.model.train_X,
-            self.model.train_y
+            self.data_adapter.train_X,
+            self.data_adapter.train_y
         )
 
         validation_dataset = TensorDataset(
-            self.model.validation_X,
-            self.model.validation_y
+            self.data_adapter.validation_X,
+            self.data_adapter.validation_y
         )
 
         test_dataset = TensorDataset(
-            self.model.test_X,
-            self.model.test_y
+            self.data_adapter.test_X,
+            self.data_adapter.test_y
         )
 
         train_loader = DataLoader(
@@ -532,12 +529,63 @@ class Trainer_Transformer:
         y_true = []
         y_pred = []
 
+        #--store the raw features temporarily for feature extraction.
+        raw_features = {}
+
         with torch.no_grad():
 
             for X, y in test_loader:
 
-                output = self.model(X)
+                #--input projection.
+                x = self.model.input_projection(X)
 
+                raw_features.setdefault(
+                    "input projection",
+                    []
+                ).append(
+                    x.cpu()
+                )
+
+                #--add positional encoding.
+                x = x + self.model.positional_encoding
+
+                #--Transformer encoder.
+                for layer_index, encoder_layer in enumerate(
+                    self.model.transformer_encoder.layers
+                ):
+
+                    x = encoder_layer(x)
+
+                    layer_name = f"encoder{layer_index + 1}"
+
+                    raw_features.setdefault(
+                        layer_name,
+                        []
+                    ).append(
+                        x.cpu()
+                    )
+
+                #--global average pooling.
+                x = self.model._global_average_pooling(x)
+
+                raw_features.setdefault(
+                    "globalpool",
+                    []
+                ).append(
+                    x.cpu()
+                )
+
+                #--classifier.
+                output = self.model.classifier(x)
+
+                raw_features.setdefault(
+                    "classifier",
+                    []
+                ).append(
+                    output.cpu()
+                )
+
+                #--calculate test loss and accuracy.
                 loss = self.criterion_instance(
                     output,
                     y
@@ -561,6 +609,17 @@ class Trainer_Transformer:
                     predicted.cpu().tolist()
                 )
 
+        #--combine the raw features from all batches.
+        for layer_name in raw_features:
+
+            raw_features[layer_name] = torch.cat(
+                raw_features[layer_name],
+                dim=0
+            )
+
+        #--temporarily store the raw features for _get_features_info().
+        self.raw_features = raw_features
+
         test_loss = total_loss / total
         test_accuracy = correct / total
 
@@ -569,7 +628,7 @@ class Trainer_Transformer:
             "test_accuracy": test_accuracy,
             "y_true": y_true,
             "y_pred": y_pred,
-            "label_to_index": self.model.label_to_index
+            "label_to_index": self.data_adapter.label_to_index
         }
 
 
@@ -626,89 +685,38 @@ class Trainer_Transformer:
     #--get the features from the model layers from selected layer.
     def _get_features_info(
         self,
-        test_loader,
         run_id,
         selected_epoch_num
     ):
-        """Extract and save the selected model features."""
+        """Convert and save the selected model features."""
 
-        self.model.eval()
+        #--get the raw features temporarily stored by _test_one_run().
+        raw_features = self.raw_features
 
-        features = {}
-
+        #--determine the feature layers to save.
         if "all" in self.features_save_layers:
             feature_layers = [
                 layer_name
-                for layer_name in self.model_layer_name_list
-                if layer_name != "all"
+                for layer_name in self.feature_registry
             ]
         else:
             feature_layers = self.features_save_layers.copy()
 
-        with torch.no_grad():
+        #--select the required raw features according to the feature layers.
+        selected_features = {}
 
-            for X, _ in test_loader:
+        for layer_name in feature_layers:
 
-                #--input projection.
-                x = self.model.input_projection(X)
-
-                if "input projection" in feature_layers:
-                    features.setdefault(
-                        "input projection",
-                        []
-                    ).append(
-                        x.cpu()
-                    )
-
-                #--add positional encoding.
-                x = x + self.model.positional_encoding
-
-                #--Transformer encoder.
-                for layer_index, encoder_layer in enumerate(
-                    self.model.transformer_encoder.layers
-                ):
-
-                    x = encoder_layer(x)
-
-                    layer_name = f"encoder{layer_index + 1}"
-
-                    if layer_name in feature_layers:
-                        features.setdefault(
-                            layer_name,
-                            []
-                        ).append(
-                            x.cpu()
-                        )
-
-                #--global average pooling.
-                x = self.model._global_average_pooling(x)
-
-                if "globalpool" in feature_layers:
-                    features.setdefault(
-                        "globalpool",
-                        []
-                    ).append(
-                        x.cpu()
-                    )
-
-                #--classifier.
-                x = self.model.classifier(x)
-
-                if "classifier" in feature_layers:
-                    features.setdefault(
-                        "classifier",
-                        []
-                    ).append(
-                        x.cpu()
-                    )
-
-        #--combine the features from all batches.
-        for layer_name in features:
-
-            features[layer_name] = torch.cat(
-                features[layer_name],
-                dim=0
+            selected_features[layer_name] = (
+                raw_features[layer_name]
             )
+
+        #--convert the selected features for visualization.
+        converted_features = (
+            self._convert_features_for_visualization(
+                selected_features
+            )
+        )
 
         #--create the feature save directory.
         features_dir = os.path.join(
@@ -723,24 +731,6 @@ class Trainer_Transformer:
             exist_ok=True
         )
 
-        #--save the raw model features.
-        features_path = os.path.join(
-            features_dir,
-            "selected_model_features.pt"
-        )
-
-        torch.save(
-            features,
-            features_path
-        )
-
-        #--convert the raw features for visualization.
-        converted_features = (
-            self._convert_features_for_visualization(
-                features
-            )
-        )
-
         #--save the converted features.
         converted_features_path = os.path.join(
             features_dir,
@@ -752,19 +742,16 @@ class Trainer_Transformer:
             converted_features_path
         )
 
-        #--get the relative feature paths.
-        relative_features_path = os.path.relpath(
-            features_path,
-            self.experiment_data_path
-        )
-
+        #--get the relative converted feature path.
         relative_converted_features_path = os.path.relpath(
             converted_features_path,
             self.experiment_data_path
         )
 
+        #--release the temporary raw features.
+        self.raw_features = None
+
         return {
-            "features_path": relative_features_path,
             "converted_features_path": relative_converted_features_path,
             "selected_model_epoch_num": selected_epoch_num
         }
@@ -811,16 +798,6 @@ class Trainer_Transformer:
             "checkpoint_path": relative_checkpoint_path,
             "selected_model_epoch_num": selected_epoch_num
         }
-
-
-    #--create a method to reset the model parameters before starting a new run.
-    def _reset_model_parameters(self):
-        """Reset the model parameters before starting a new run."""
-
-        for module in self.model.modules():
-
-            if hasattr(module, "reset_parameters"):
-                module.reset_parameters()
 
 
     #--create a method to set the random seed for the current run.
@@ -878,10 +855,33 @@ class Trainer_Transformer:
         #--get every run information.
         for run_id in range(1, self.runs_num + 1):
 
+            #--set the random seed for the current run.
             self._set_random_seed(random_seed)
 
-            #--reset model parameters for the current run.
-            self._reset_model_parameters()
+            #--create a new model for the current run.
+            self.model = Model_Transformer(
+                num_classes=self.num_classes
+            )
+
+            #--initialize feature extraction information only for the first run.
+            if run_id == 1:
+
+                #--get the layer names from the input Transformer model.
+                self.model_layer_name_list = (
+                    self._get_model_layer_name_list()
+                )
+
+                #--verify the input layers name that user wants to extract features.
+                self.features_save_layers = (
+                    self._validate_input_layers_name_protocol(
+                        self.features_save_layers
+                    )
+                )
+
+                #--build the feature registry.
+                self.feature_registry = (
+                    self._get_feature_registry()
+                )
 
             #--get every epoch information and selected epoch num.
             epoch_info_list, selected_epoch_num = self._train_one_run(
@@ -896,16 +896,15 @@ class Trainer_Transformer:
                 selected_epoch_num
             )
 
-            #--get the selected model features.
-            features_info = self._get_features_info(
-                test_loader,
-                run_id,
-                selected_epoch_num
-            )
-
             #--get the test information.
             test_info = self._test_one_run(
                 test_loader
+            )
+
+            #--get the selected model features.
+            features_info = self._get_features_info(
+                run_id,
+                selected_epoch_num
             )
 
             #--get the experiment information for every run.
@@ -916,7 +915,6 @@ class Trainer_Transformer:
                 "random_seed": random_seed
             }
 
-            #--collect all information to create ExperimentResultContainer objective.
             run_result = ExperimentResultContainer(
                 exper_info=exper_info,
                 epoch_info_list=epoch_info_list,
@@ -930,8 +928,9 @@ class Trainer_Transformer:
 
             random_seed += 1
 
-        #--save all experiment results.
-        self._save_experiment_results(all_runs_info)
+        self._save_experiment_results(
+            all_runs_info
+        )
 
         return all_runs_info
 

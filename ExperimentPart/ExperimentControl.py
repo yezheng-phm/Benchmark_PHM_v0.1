@@ -25,8 +25,8 @@ if __name__ == "__main__":
     #-----------------trainer configuration-------------------------#
 
     BATCH_SIZE = 32
-    EPOCHS = 2
-    RUNS_NUM = 2
+    EPOCHS = 1
+    RUNS_NUM = 1
 
     LEARNING_RATE = 0.001
     OPTIMIZER = "Adam"
@@ -34,12 +34,12 @@ if __name__ == "__main__":
 
     BASE_SEED = 42
 
-    FEATURES_SAVE_LAYERS = []
+    FEATURES_SAVE_LAYERS = ["all"]
 
     #-----------------experiment configuration-------------------------#
 
     EXPERIMENT_NAME = "Transformer_Test"
-    EXPERIMENT_ID = "02"
+    EXPERIMENT_ID = "03"
     EXPERIMENT_DATA_PATH = r"D:\Project\PHM_Data\ExperimentData\tests"
 
 
@@ -65,5 +65,5 @@ if __name__ == "__main__":
     )
 
 
-model_loader.run()
+    model_loader.run()
 
