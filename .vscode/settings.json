@@ -3,6 +3,7 @@
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python.envFile": "${workspaceFolder}/.env",
     "python.terminal.useEnvFile": true,
+    "terminal.integrated.scrollback": 50000,
 
     "files.exclude": {
         "**/.env": true

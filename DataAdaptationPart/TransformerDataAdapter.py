@@ -9,7 +9,6 @@ class TransformerDataAdapter:
 
     def __init__(self, file_path):
 
-
         #--prepare and adapt the dataset
         self._prepare_data(file_path)
 
@@ -25,17 +24,17 @@ class TransformerDataAdapter:
             weights_only=False,
         )
 
-        train_set = data["train"]
+        train_set = data["training"]
         validation_set = data["validation"]
         test_set = data["test"]
 
         return train_set, validation_set, test_set
 
 
-    #--trasform loaded data into Pytorch tensor form.
+    #--transform loaded data into PyTorch tensor form.
     @staticmethod
     def adapt_data(data_set):
-        """Convert BenchmarkData X to PyTorch tensors."""
+        """Convert X_data to PyTorch tensors."""
 
         X = []
 
@@ -43,7 +42,7 @@ class TransformerDataAdapter:
 
             X.append(
                 torch.tensor(
-                    data.X,
+                    data.X_data,
                     dtype=torch.float32
                 )
             )
@@ -60,15 +59,8 @@ class TransformerDataAdapter:
 
         for data in data_set:
 
-            if data.y.endswith("-Normal"):
-                label = "Normal"
-            else:
-                label = "-".join(
-                    data.y.split("-")[1:]
-                )
-
             y.append(
-                label_to_index[label]
+                label_to_index[data.y]
             )
 
         return torch.tensor(
@@ -77,7 +69,8 @@ class TransformerDataAdapter:
         )
 
 
-   #--adapt data for the transformer model.
+#-----------------------------------------------------------------------------------------------
+    #--adapt data for the transformer model.
     def _prepare_data(self, file_path):
         """Load and adapt the dataset for the Transformer model."""
 
@@ -86,7 +79,7 @@ class TransformerDataAdapter:
             file_path
         )
 
-        #--convert BenchmarkData X to PyTorch tensors
+        #--convert X_data to PyTorch tensors
         train_X = self.adapt_data(train_set)
         validation_X = self.adapt_data(validation_set)
         test_X = self.adapt_data(test_set)
@@ -115,9 +108,7 @@ class TransformerDataAdapter:
         #--create the label mapping using the training set only
         labels = sorted(
             {
-                "Normal"
-                if data.y.endswith("-Normal")
-                else "-".join(data.y.split("-")[1:])
+                data.y
                 for data in train_set
             }
         )
@@ -153,11 +144,3 @@ class TransformerDataAdapter:
         self.test_y = test_y
 
         self.label_to_index = label_to_index
-
-
-
-
-
-
-
-        

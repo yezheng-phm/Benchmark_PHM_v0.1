@@ -1,812 +1,613 @@
-from copy import deepcopy
-from math import ceil
+#-----------------------------------------------------------------------
+#--used to organize slices into samples according to the specified
+#--training, validation, and test protocols.
+#-----------------------------------------------------------------------
+
 from pathlib import Path
 
-from datetime import datetime
 import numpy as np
 import torch
 
-from DataProcessPart.BenchmarkData import BenchmarkData
+from DataProcessPart.DataProcessContainer import DataProcessContainer
+
+
+#---------------------------sample processor logic configurations--------------------------------------
+
+TRAIN_DOMAIN = [1797, 1797, 1750]
+VALIDATION_DOMAIN = [1730]
+TEST_DOMAIN = [1730]
+
+TRAIN_SIZE = 2000
+VALIDATION_SIZE = 1000
+TEST_SIZE = 1000
+
+GROUP_SLICE_SHUFFLE_SEED = 42
+
+EXCLUDED_FAULT_SIZES = ["028"]
+
+OR_FAULT_POSITIONS = [6]
+
+SAMPLE_DATA_SAVE_PATH = r"D:\Project\PHM_Data\SampledData"
+SAMPLE_DATA_SAVE_NAME = "CWRU_test.pt"
+
+#------------------------------------------------------------------------------------------------------
 
 
 class Sample_Processor:
-    """Select Slices and build train, validation, and test sets."""
+    """Organize slices into training, validation, and test samples."""
 
     def __init__(
         self,
-        train_conditions: list[int],
-        validation_conditions: list[int],
-        test_conditions: list[int],
-        train_size: int,
-        validation_size: int,
-        test_size: int,
-        excluded_fault_sizes: list[str],
-        or_fault_position: int,
-        random_seed: int,
-        output_dir: str,
-        output_folder: str,
+        data: list[DataProcessContainer],
+        train_domain=TRAIN_DOMAIN,
+        validation_domain=VALIDATION_DOMAIN,
+        test_domain=TEST_DOMAIN,
+        train_size=TRAIN_SIZE,
+        validation_size=VALIDATION_SIZE,
+        test_size=TEST_SIZE,
+        group_slice_shuffle_seed=GROUP_SLICE_SHUFFLE_SEED,
+        excluded_fault_sizes=EXCLUDED_FAULT_SIZES,
+        or_fault_positions=OR_FAULT_POSITIONS,
+        sample_data_save_path=SAMPLE_DATA_SAVE_PATH,
+        sample_data_save_name=SAMPLE_DATA_SAVE_NAME
     ):
-        self.train_conditions = train_conditions
-        self.validation_conditions = validation_conditions
-        self.test_conditions = test_conditions
+        self.data = data
+        self.train_domain = train_domain
+        self.validation_domain = validation_domain
+        self.test_domain = test_domain
 
         self.train_size = train_size
         self.validation_size = validation_size
         self.test_size = test_size
 
+        self.group_slice_shuffle_seed = group_slice_shuffle_seed
         self.excluded_fault_sizes = excluded_fault_sizes
+        self.or_fault_positions = or_fault_positions
+        self.sample_data_save_path = sample_data_save_path
+        self.sample_data_save_name = sample_data_save_name
 
-        self.or_fault_position = or_fault_position
-        self.rng = np.random.default_rng(random_seed)
-
-        # Output path.
-        self.output_dir = ( 
-            Path(output_dir) / output_folder 
-            )
-        
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        self.output_file = (
-        self.output_dir
-        / f"sampled_data_{timestamp}.pt"
+        self.rng = np.random.default_rng(
+            self.group_slice_shuffle_seed
         )
 
-    # ==========================================================
-    # Main
-    # ==========================================================
+#----------------------------------------------------------------------------------------------------
 
-    def process(
+    #--filter input sliced data list to the sample processing protocol.
+    def _filter_data(
         self,
-        data_list: list[BenchmarkData],
-    ):
-        """Build train, validation, and test sample sets."""
+    ) -> list[DataProcessContainer]:
+        """Filter input slices according to the sample processing protocol."""
 
-        train_requirements = self._condition_requirements(
-            self.train_conditions,
-            self.train_size,
-        )
+        filtered_data = []
 
-        validation_requirements = self._condition_requirements(
-            self.validation_conditions,
-            self.validation_size,
-        )
+        for data_container in self.data:
 
-        test_requirements = self._condition_requirements(
-            self.test_conditions,
-            self.test_size,
-        )
+            metadata_info = data_container.metadata["metadata_info"]
 
-        train_sources = self._source_requirements(
-            data_list,
-            train_requirements,
-        )
+            fault_size = metadata_info["fault_size"]
+            fault_label = metadata_info["fault_label"]
+            fault_position_num = metadata_info["fault_position_num"]
 
-        validation_sources = self._source_requirements(
-            data_list,
-            validation_requirements,
-        )
-
-        test_sources = self._source_requirements(
-            data_list,
-            test_requirements,
-        )
-
-        sources = (
-            set(train_sources)
-            | set(validation_sources)
-            | set(test_sources)
-        )
-
-        train_set = []
-        validation_set = []
-        test_set = []
-
-        for source in sorted(
-            sources,
-            key=self._source_sort_key,
-        ):
-
-            source_data = self._filter_source(
-                data_list,
-                source,
-            )
-
-            train_size = train_sources.get(
-                source,
-                0,
-            )
-
-            validation_size = validation_sources.get(
-                source,
-                0,
-            )
-
-            test_size = test_sources.get(
-                source,
-                0,
-            )
-
-            train_samples, validation_samples, test_samples = (
-                self._process_source(
-                    source_data,
-                    source,
-                    train_size,
-                    validation_size,
-                    test_size,
-                )
-            )
-
-            train_set.extend(train_samples)
-            validation_set.extend(validation_samples)
-            test_set.extend(test_samples)
-
-        # Final global mixing.
-        self.rng.shuffle(train_set)
-        self.rng.shuffle(validation_set)
-        self.rng.shuffle(test_set)
-
-        self._finalize(train_set)
-        self._finalize(validation_set)
-        self._finalize(test_set)
-
-        self._check_leakage(
-            train_set,
-            validation_set,
-            test_set,
-        )
-
-        # Save processed data.
-        self._save(
-            train_set,
-            validation_set,
-            test_set,
-        )
-
-        return train_set, validation_set, test_set
-
-    # ==========================================================
-    # 1. Condition allocation
-    # ==========================================================
-
-    def _condition_requirements(
-        self,
-        conditions: list[int],
-        total_size: int,
-    ) -> dict[int, int]:
-        """
-        Allocate samples to Conditions.
-
-        Repeated Conditions occupy repeated shares.
-
-        Example:
-            [1797, 1797, 1750]
-            6000
-            ->
-            1797: 4000
-            1750: 2000
-        """
-
-        if not conditions:
-            raise ValueError(
-                "Conditions cannot be empty."
-            )
-
-        base = total_size // len(conditions)
-        remainder = total_size % len(conditions)
-
-        requirements = {}
-
-        for index, condition in enumerate(conditions):
-
-            amount = base + (
-                1 if index < remainder else 0
-            )
-
-            requirements[condition] = (
-                requirements.get(condition, 0)
-                + amount
-            )
-
-        return requirements
-
-    # ==========================================================
-    # 2. Source allocation
-    # ==========================================================
-
-    def _source_requirements(
-        self,
-        data_list: list[BenchmarkData],
-        condition_requirements: dict[int, int],
-    ) -> dict[tuple, int]:
-        """Allocate Condition samples to Sources."""
-
-        requirements = {}
-
-        for condition, total_size in (
-            condition_requirements.items()
-        ):
-
-            condition_data = self._filter_condition(
-                data_list,
-                condition,
-            )
-
-            sources = self._discover_sources(
-                condition_data
-            )
-
-            if not sources:
-                raise ValueError(
-                    f"No valid Source found for "
-                    f"condition={condition}."
-                )
-
-            allocations = self._allocate(
-                total_size,
-                sources,
-            )
-
-            for source, amount in zip(
-                sources,
-                allocations,
-            ):
-                requirements[source] = amount
-
-        return requirements
-
-    # ==========================================================
-    # 3. Source-level Group partition
-    # ==========================================================
-
-    def _process_source(
-        self,
-        source_data: list[BenchmarkData],
-        source: tuple,
-        train_size: int,
-        validation_size: int,
-        test_size: int,
-    ):
-        """Partition Groups and select Slices for one Source."""
-
-        groups = {}
-
-        for data in source_data:
-
-            group_id = (
-                data.metadata["group_info"]["group_id"]
-            )
-
-            groups.setdefault(
-                group_id,
-                []
-            ).append(data)
-
-        group_ids = sorted(groups)
-
-        if not group_ids:
-            raise ValueError(
-                f"No Groups found for Source:\n"
-                f"{self._format_source(source)}"
-            )
-
-        # Every Group should contain the same number of Slices.
-        slice_counts = {
-            len(slices)
-            for slices in groups.values()
-        }
-
-        if len(slice_counts) != 1:
-            raise ValueError(
-                f"Inconsistent Slice counts between Groups.\n"
-                f"Source:\n"
-                f"{self._format_source(source)}\n"
-                f"Slice counts: {sorted(slice_counts)}"
-            )
-
-        slices_per_group = slice_counts.pop()
-
-        group_length = self._group_length(
-            source_data[0]
-        )
-
-        available_groups = len(group_ids)
-
-        train_groups = ceil(
-            train_size / slices_per_group
-        )
-
-        validation_groups = ceil(
-            validation_size / slices_per_group
-        )
-
-        test_groups = ceil(
-            test_size / slices_per_group
-        )
-
-        total_required_groups = (
-            train_groups
-            + validation_groups
-            + test_groups
-        )
-
-        # ------------------------------------------------------
-        # Hard availability check.
-        # ------------------------------------------------------
-
-        if total_required_groups > available_groups:
-
-            total_vibration_points = (
-                available_groups * group_length
-            )
-
-            raise ValueError(
-                "\n"
-                "==================================================\n"
-                "Insufficient Groups for Source\n"
-                "==================================================\n"
-                f"Source:\n"
-                f"  {self._format_source(source)}\n"
-                "\n"
-                f"Total vibration points:\n"
-                f"  {total_vibration_points}\n"
-                "\n"
-                f"Group length:\n"
-                f"  {group_length}\n"
-                "\n"
-                f"Available Groups:\n"
-                f"  {available_groups}\n"
-                "\n"
-                f"Slices per Group:\n"
-                f"  {slices_per_group}\n"
-                "\n"
-                f"Train:\n"
-                f"  Required Slices: {train_size}\n"
-                f"  Required Groups: {train_groups}\n"
-                "\n"
-                f"Validation:\n"
-                f"  Required Slices: {validation_size}\n"
-                f"  Required Groups: "
-                f"{validation_groups}\n"
-                "\n"
-                f"Test:\n"
-                f"  Required Slices: {test_size}\n"
-                f"  Required Groups: {test_groups}\n"
-                "\n"
-                f"Total Required Groups:\n"
-                f"  {total_required_groups}\n"
-                "\n"
-                f"Available Groups:\n"
-                f"  {available_groups}\n"
-                "=================================================="
-            )
-
-        # ------------------------------------------------------
-        # Randomly shuffle Groups ONCE.
-        # ------------------------------------------------------
-
-        shuffled_groups = self.rng.permutation(
-            group_ids
-        ).tolist()
-
-        train_ids = shuffled_groups[
-            :train_groups
-        ]
-
-        validation_start = train_groups
-
-        validation_end = (
-            validation_start
-            + validation_groups
-        )
-
-        validation_ids = shuffled_groups[
-            validation_start:validation_end
-        ]
-
-        test_start = validation_end
-
-        test_end = (
-            test_start
-            + test_groups
-        )
-
-        test_ids = shuffled_groups[
-            test_start:test_end
-        ]
-
-        # ------------------------------------------------------
-        # Build Slice Pools.
-        # ------------------------------------------------------
-
-        train_pool = self._build_pool(
-            groups,
-            train_ids,
-        )
-
-        validation_pool = self._build_pool(
-            groups,
-            validation_ids,
-        )
-
-        test_pool = self._build_pool(
-            groups,
-            test_ids,
-        )
-
-        # ------------------------------------------------------
-        # Select exact Slice numbers.
-        # ------------------------------------------------------
-
-        train_samples = self._select_slices(
-            train_pool,
-            train_size,
-        )
-
-        validation_samples = self._select_slices(
-            validation_pool,
-            validation_size,
-        )
-
-        test_samples = self._select_slices(
-            test_pool,
-            test_size,
-        )
-
-        return (
-            train_samples,
-            validation_samples,
-            test_samples,
-        )
-
-    # ==========================================================
-    # 4. Filtering and Source discovery
-    # ==========================================================
-
-    def _filter_condition(
-        self,
-        data_list: list[BenchmarkData],
-        condition: int,
-    ) -> list[BenchmarkData]:
-        """Filter Slices by Condition."""
-
-        result = []
-
-        for data in data_list:
-
-            info = data.metadata["info"]
-
-            if info["rpm"] != condition:
+            if fault_size in self.excluded_fault_sizes:
                 continue
 
             if (
-                info["fault_size"]
-                in self.excluded_fault_sizes
+                fault_label == "OR"
+                and fault_position_num not in self.or_fault_positions
             ):
                 continue
 
-            if info["fault_label"] == "OR":
+            filtered_data.append(data_container)
 
-                position = (
-                    data.metadata["extra_info"]
-                    ["fault_position_num"]
-                )
+        return filtered_data
 
-                if position != self.or_fault_position:
-                    continue
 
-            result.append(data)
 
-        return result
-
-    def _discover_sources(
+    #--build the index as "Domain -> File_name -> Slice" for sampling. 
+    def _build_data_index(
         self,
-        data_list: list[BenchmarkData],
-    ) -> list[tuple]:
-        """Find all unique Sources."""
+        filtered_data: list[DataProcessContainer],
+    ) -> dict:
+        """Build the Domain -> File -> Group -> Slice index."""
 
-        sources = set()
+        data_index = {}
 
-        for data in data_list:
+        for data_container in filtered_data:
 
-            metadata = data.metadata
+            domain = data_container.metadata["metadata_info"]["domain"]
+            file_name = data_container.metadata["metadata_info"]["file_name"]
+            group_id = data_container.group_info["group_id"]
+            slice_id = data_container.slice_info["slice_id"]
 
-            source = (
-                metadata["dataset"],
-                metadata["info"]["rpm"],
-                metadata["info"]["load"],
-                metadata["info"]["fault_size"],
-                metadata["info"]["file_name"],
-                metadata["extra_info"]["source_key"],
+            if domain not in data_index:
+                data_index[domain] = {}
+
+            if file_name not in data_index[domain]:
+                data_index[domain][file_name] = {}
+
+            if group_id not in data_index[domain][file_name]:
+                data_index[domain][file_name][group_id] = []
+
+            data_index[domain][file_name][group_id].append(
+                slice_id
             )
 
-            sources.add(source)
+        return data_index
 
-        return sorted(
-            sources,
-            key=self._source_sort_key,
-        )
 
-    def _filter_source(
+
+    #--Distribute a total quota as evenly as possible.
+    #--for example,1001/3= 333 334 334, is not 333 333 335.
+    def _distribute_quota(
         self,
-        data_list: list[BenchmarkData],
-        source: tuple,
-    ) -> list[BenchmarkData]:
-        """Return all Slices from one Source."""
-
-        result = []
-
-        for data in data_list:
-
-            metadata = data.metadata
-
-            current_source = (
-                metadata["dataset"],
-                metadata["info"]["rpm"],
-                metadata["info"]["load"],
-                metadata["info"]["fault_size"],
-                metadata["info"]["file_name"],
-                metadata["extra_info"]["source_key"],
-            )
-
-            if current_source == source:
-                result.append(data)
-
-        return result
-
-    # ==========================================================
-    # 5. Slice selection
-    # ==========================================================
-
-    def _build_pool(
-        self,
-        groups: dict,
-        group_ids: list[int],
-    ) -> list[BenchmarkData]:
-        """Build a Slice Pool from selected Groups."""
-
-        pool = []
-
-        for group_id in group_ids:
-            pool.extend(groups[group_id])
-
-        return pool
-
-    def _select_slices(
-        self,
-        pool: list[BenchmarkData],
-        target_size: int,
-    ) -> list[BenchmarkData]:
-        """Randomly select exact Slice count."""
-
-        if target_size == 0:
-            return []
-
-        if target_size > len(pool):
-            raise ValueError(
-                f"Requested {target_size} Slices, "
-                f"but only {len(pool)} are available."
-            )
-
-        indices = self.rng.choice(
-            len(pool),
-            size=target_size,
-            replace=False,
-        )
-
-        return [
-            deepcopy(pool[index])
-            for index in indices
-        ]
-
-    # ==========================================================
-    # Utilities
-    # ==========================================================
-
-    def _allocate(
-        self,
-        total: int,
-        items: list,
+        total_quota: int,
+        num_parts: int,
     ) -> list[int]:
-        """Allocate quantity with earlier items receiving remainders."""
+        """Distribute a total quota as evenly as possible."""
 
-        base = total // len(items)
-        remainder = total % len(items)
-
-        return [
-            base + (
-                1 if index < remainder else 0
+        if total_quota < 0:
+            raise ValueError(
+                "total_quota must be non-negative."
             )
-            for index in range(len(items))
+
+        if num_parts <= 0:
+            raise ValueError(
+                "num_parts must be greater than zero."
+            )
+
+        base_quota = total_quota // num_parts
+        remainder = total_quota % num_parts
+
+        quotas = [
+            base_quota + 1
+            if index < remainder
+            else base_quota
+            for index in range(num_parts)
         ]
 
-    def _source_sort_key(
+        return quotas
+
+
+
+    #--calculate sample requirments for each file.
+    def _calculate_file_sample_requirements(
         self,
-        source: tuple,
-    ) -> tuple:
-        """Return a stable sorting key for Source."""
+        data_index: dict,
+    ) -> dict:
+        """Calculate sample requirements for each file."""
 
-        return (
-            source[0],
-            source[1],
-            source[2],
-            "" if source[3] is None else source[3],
-            source[4],
-            source[5],
-        )
+        file_sample_requirements = {}
 
-    def _group_length(
-        self,
-        data: BenchmarkData,
-    ) -> int:
-        """Get Group length from group_info.str_end."""
-
-        str_end = data.metadata[
-            "group_info"
-        ]["str_end"]
-
-        start, end = map(
-            int,
-            str_end.strip("[]").split("-"),
-        )
-
-        return end - start + 1
-
-    def _format_source(
-        self,
-        source: tuple,
-    ) -> str:
-        """Format Source information."""
-
-        return (
-            f"dataset={source[0]}, "
-            f"rpm={source[1]}, "
-            f"load={source[2]}, "
-            f"fault_size={source[3]}, "
-            f"file_name={source[4]}, "
-            f"source_key={source[5]}"
-        )
-
-    # ==========================================================
-    # Finalization
-    # ==========================================================
-
-    def _finalize(
-        self,
-        data_list: list[BenchmarkData],
-    ) -> None:
-        """Assign sample IDs, labels, and status."""
-
-        for sample_id, data in enumerate(
-            data_list
-        ):
-
-            data.metadata["sample_info"] = {
-                "sample_id": sample_id
-            }
-
-            data.y = self._build_label(data)
-
-            data.metadata["status"] = "sampled"
-
-    def _build_label(
-        self,
-        data: BenchmarkData,
-    ) -> str:
-        """Build Sample Label."""
-
-        info = data.metadata["info"]
-
-        rpm = info["rpm"]
-        fault_label = info["fault_label"]
-
-        if fault_label == "Normal":
-            return f"{rpm}-Normal"
-
-        return (
-            f"{rpm}-"
-            f"{info['fault_size']}-"
-            f"{fault_label}"
-        )
-
-    # ==========================================================
-    # Save
-    # ==========================================================
-
-    def _save(
-        self,
-        train_set: list[BenchmarkData],
-        validation_set: list[BenchmarkData],
-        test_set: list[BenchmarkData],
-    ) -> None:
-        """Save train, validation, and test sets to a .pt file."""
-
-        self.output_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        data = {
-            "train": train_set,
-            "validation": validation_set,
-            "test": test_set,
+        split_configs = {
+            "training": (
+                self.train_domain,
+                self.train_size,
+            ),
+            "validation": (
+                self.validation_domain,
+                self.validation_size,
+            ),
+            "test": (
+                self.test_domain,
+                self.test_size,
+            ),
         }
 
-        torch.save(
-            data,
-            self.output_file,
-        )
+        for split_name, (domains, total_size) in split_configs.items():
 
-    # ==========================================================
-    # Leakage check
-    # ==========================================================
+            if not domains:
+                continue
 
-    def _check_leakage(
-        self,
-        train_set: list[BenchmarkData],
-        validation_set: list[BenchmarkData],
-        test_set: list[BenchmarkData],
-    ) -> None:
-        """Check Source + Group leakage."""
+            # Count how many times each domain appears.
+            domain_counts = {}
 
-        train_groups = self._group_keys(
-            train_set
-        )
-
-        validation_groups = self._group_keys(
-            validation_set
-        )
-
-        test_groups = self._group_keys(
-            test_set
-        )
-
-        if train_groups & validation_groups:
-            raise ValueError(
-                "Group leakage detected between "
-                "Train and Validation."
-            )
-
-        if train_groups & test_groups:
-            raise ValueError(
-                "Group leakage detected between "
-                "Train and Test."
-            )
-
-        if validation_groups & test_groups:
-            raise ValueError(
-                "Group leakage detected between "
-                "Validation and Test."
-            )
-
-    def _group_keys(
-        self,
-        data_list: list[BenchmarkData],
-    ) -> set[tuple]:
-        """Build Source + Group identifiers."""
-
-        keys = set()
-
-        for data in data_list:
-
-            metadata = data.metadata
-
-            source = (
-                metadata["dataset"],
-                metadata["info"]["rpm"],
-                metadata["info"]["load"],
-                metadata["info"]["fault_size"],
-                metadata["info"]["file_name"],
-                metadata["extra_info"]["source_key"],
-            )
-
-            group_id = (
-                metadata["group_info"]["group_id"]
-            )
-
-            keys.add(
-                (
-                    source,
-                    group_id,
+            for domain in domains:
+                domain_counts[domain] = (
+                    domain_counts.get(domain, 0) + 1
                 )
+
+            # Distribute the total sample size among
+            # all domain occurrences as evenly as possible.
+            domain_occurrence_quotas = self._distribute_quota(
+                total_quota=total_size,
+                num_parts=len(domains),
             )
 
-        return keys
+            # Assign each occurrence quota to its domain.
+            domain_sample_requirements = {}
+
+            occurrence_index = 0
+
+            for domain in domains:
+
+                domain_quota = domain_occurrence_quotas[
+                    occurrence_index
+                ]
+
+                if domain not in domain_sample_requirements:
+                    domain_sample_requirements[domain] = 0
+
+                domain_sample_requirements[domain] += domain_quota
+
+                occurrence_index += 1
+
+            # Distribute each domain's quota among its files.
+            for domain, domain_quota in domain_sample_requirements.items():
+
+                if domain not in data_index:
+                    raise ValueError(
+                        f"Domain '{domain}' required for "
+                        f"{split_name} but not found in data index."
+                    )
+
+                file_names = list(data_index[domain].keys())
+
+                if not file_names:
+                    raise ValueError(
+                        f"No files found for domain '{domain}' "
+                        f"required for {split_name}."
+                    )
+
+                file_quotas = self._distribute_quota(
+                    total_quota=domain_quota,
+                    num_parts=len(file_names),
+                )
+
+                for file_name, file_quota in zip(
+                    file_names,
+                    file_quotas,
+                ):
+
+                    if domain not in file_sample_requirements:
+                        file_sample_requirements[domain] = {}
+
+                    if file_name not in file_sample_requirements[domain]:
+                        file_sample_requirements[domain][file_name] = {
+                            "training": 0,
+                            "validation": 0,
+                            "test": 0,
+                        }
+
+                    file_sample_requirements[domain][file_name][
+                        split_name
+                    ] = file_quota
+
+        return file_sample_requirements
+
+
+
+    #--allocate complete groups to training, validation, and test
+    #--within each file, groups are shuffled once and cannot cross splits.
+    def _allocate_groups(
+        self,
+        data_index: dict,
+        file_sample_requirements: dict,
+    ) -> dict:
+        """Allocate complete groups to training, validation, and test."""
+
+        group_allocation = {}
+
+        for domain, file_requirements in file_sample_requirements.items():
+
+            group_allocation[domain] = {}
+
+            for file_name, split_requirements in file_requirements.items():
+
+                group_dict = data_index[domain][file_name]
+
+                group_ids = list(group_dict.keys())
+
+                if not group_ids:
+                    raise ValueError(
+                        f"No groups found for domain '{domain}', "
+                        f"file '{file_name}'."
+                    )
+
+                # Shuffle groups once for this file.
+                shuffled_group_ids = group_ids.copy()
+                self.rng.shuffle(shuffled_group_ids)
+
+                group_allocation[domain][file_name] = {
+                    "training": [],
+                    "validation": [],
+                    "test": [],
+                }
+
+                remaining_group_ids = shuffled_group_ids.copy()
+
+                split_configs = [
+                    ("training", split_requirements["training"]),
+                    ("validation", split_requirements["validation"]),
+                    ("test", split_requirements["test"]),
+                ]
+
+                for split_name, required_samples in split_configs:
+
+                    if required_samples == 0:
+                        continue
+
+                    current_capacity = 0
+
+                    while (
+                        current_capacity < required_samples
+                        and remaining_group_ids
+                    ):
+                        group_id = remaining_group_ids.pop(0)
+
+                        group_allocation[domain][file_name][
+                            split_name
+                        ].append(group_id)
+
+                        current_capacity += len(
+                            group_dict[group_id]
+                        )
+
+                    if current_capacity < required_samples:
+                        raise ValueError(
+                            f"Insufficient group capacity for "
+                            f"{split_name}: "
+                            f"domain='{domain}', "
+                            f"file='{file_name}', "
+                            f"required={required_samples}, "
+                            f"capacity={current_capacity}."
+                        )
+
+        return group_allocation
+
+
+
+    #--select the exact number of slices required by each split.
+    #--each selected slice is stored together with its group_id.
+    def _select_slices(
+        self,
+        data_index: dict,
+        file_sample_requirements: dict,
+        group_allocation: dict,
+    ) -> dict:
+        """Select the exact number of slices for each split."""
+
+        slice_selection = {}
+
+        for domain, file_requirements in file_sample_requirements.items():
+
+            slice_selection[domain] = {}
+
+            for file_name, split_requirements in file_requirements.items():
+
+                group_dict = data_index[domain][file_name]
+                allocated_groups = group_allocation[domain][file_name]
+
+                slice_selection[domain][file_name] = {
+                    "training": [],
+                    "validation": [],
+                    "test": [],
+                }
+
+                split_configs = [
+                    ("training", split_requirements["training"]),
+                    ("validation", split_requirements["validation"]),
+                    ("test", split_requirements["test"]),
+                ]
+
+                for split_name, required_samples in split_configs:
+
+                    if required_samples == 0:
+                        continue
+
+                    #--------------------------------------------------
+                    #--Build candidate (group_id, slice_id) pairs.
+                    #--------------------------------------------------
+
+                    candidate_slices = []
+
+                    for group_id in allocated_groups[split_name]:
+
+                        for slice_id in group_dict[group_id]:
+
+                            candidate_slices.append(
+                                (group_id, slice_id)
+                            )
+
+                    #--------------------------------------------------
+                    #--Validate candidate capacity.
+                    #--------------------------------------------------
+
+                    if len(candidate_slices) < required_samples:
+                        raise ValueError(
+                            f"Insufficient slice capacity for "
+                            f"{split_name}: "
+                            f"domain='{domain}', "
+                            f"file='{file_name}', "
+                            f"required={required_samples}, "
+                            f"available={len(candidate_slices)}."
+                        )
+
+                    #--------------------------------------------------
+                    #--Randomly select the required number of
+                    #--(group_id, slice_id) pairs.
+                    #--------------------------------------------------
+
+                    selected_indices = self.rng.choice(
+                        len(candidate_slices),
+                        size=required_samples,
+                        replace=False,
+                    )
+
+                    selected_slices = [
+                        candidate_slices[index]
+                        for index in selected_indices
+                    ]
+
+                    slice_selection[domain][file_name][
+                        split_name
+                    ] = selected_slices
+
+        return slice_selection
+
+
+
+    #--build the final training, validation, and test data lists.
+    #--data are appended according to the order of filtered_data.
+    #--sample_id is assigned sequentially within each split.
+    def _build_sample_data(
+        self,
+        filtered_data: list[DataProcessContainer],
+        slice_selection: dict,
+    ) -> dict:
+        """Build final training, validation, and test sample lists."""
+
+        selected_slice_lookup = {
+            "training": set(),
+            "validation": set(),
+            "test": set(),
+        }
+
+        #--------------------------------------------------------------
+        #--Build lookup:
+        #--(domain, file_name, group_id, slice_id)
+        #--------------------------------------------------------------
+
+        for domain, file_dict in slice_selection.items():
+
+            for file_name, split_selection in file_dict.items():
+
+                for split_name in (
+                    "training",
+                    "validation",
+                    "test",
+                ):
+
+                    for group_id, slice_id in (
+                        split_selection[split_name]
+                    ):
+
+                        selected_slice_lookup[
+                            split_name
+                        ].add(
+                            (
+                                domain,
+                                file_name,
+                                group_id,
+                                slice_id,
+                            )
+                        )
+
+        sample_data = {
+            "training": [],
+            "validation": [],
+            "test": [],
+        }
+
+        sample_ids = {
+            "training": 0,
+            "validation": 0,
+            "test": 0,
+        }
+
+        #--------------------------------------------------------------
+        #--Find the original DataProcessContainer from filtered_data.
+        #--The order of filtered_data determines the final order.
+        #--------------------------------------------------------------
+
+        for data_container in filtered_data:
+
+            metadata_info = data_container.metadata[
+                "metadata_info"
+            ]
+
+            domain = metadata_info["domain"]
+            file_name = metadata_info["file_name"]
+
+            group_id = data_container.group_info[
+                "group_id"
+            ]
+
+            slice_id = data_container.slice_info[
+                "slice_id"
+            ]
+
+            selection_key = (
+                domain,
+                file_name,
+                group_id,
+                slice_id,
+            )
+
+            for split_name in (
+                "training",
+                "validation",
+                "test",
+            ):
+
+                if (
+                    selection_key
+                    not in selected_slice_lookup[split_name]
+                ):
+                    continue
+
+                #------------------------------------------------------
+                #--This Slice is officially selected as a Sample.
+                #------------------------------------------------------
+
+                data_container.sample_info = {
+                    "sample_id": sample_ids[split_name]
+                }
+
+                sample_data[split_name].append(
+                    data_container
+                )
+
+                sample_ids[split_name] += 1
+
+                break
+
+        return sample_data
+
+
+
+    def _save_sample_data(self, sample_data: dict) -> None:
+        """Save the sampled training, validation, and test data."""
+
+        save_path = Path(self.sample_data_save_path)
+
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        file_path = save_path / self.sample_data_save_name
+
+        torch.save(sample_data, file_path)
+
+
+    def run(self) -> dict:
+        """Run the complete sample processing pipeline and save the result."""
+
+        filtered_data = self._filter_data()
+
+        data_index = self._build_data_index(
+            filtered_data
+        )
+
+        sample_requirements = self._calculate_file_sample_requirements(
+            data_index
+        )
+
+        allocated_groups = self._allocate_groups(
+            data_index,
+            sample_requirements
+        )
+
+        selected_slices = self._select_slices(
+            data_index,
+            sample_requirements,
+            allocated_groups
+        )
+
+        sample_data = self._build_sample_data(
+            filtered_data,
+            selected_slices
+        )
+
+        self._save_sample_data(
+            sample_data
+        )
+
+        return sample_data

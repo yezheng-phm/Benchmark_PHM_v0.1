@@ -18,15 +18,15 @@ if __name__ == "__main__":
 
     MODEL_NAME = "CNN"
 
-    FILE_PATH = r"D:\Project\PHM_Data\SampledData\10000-1024-512-ex028-10Lables\sampled_data_20260910150414.pt"
+    FILE_PATH = r"D:\Project\PHM_Data\SampledData\CWRU_test.pt"
     NUM_CLASSES = 10
 
 
     #-----------------trainer configuration-------------------------#
 
     BATCH_SIZE = 32
-    EPOCHS = 50
-    RUNS_NUM = 5
+    EPOCHS =5
+    RUNS_NUM = 1
 
     LEARNING_RATE = 0.001
     OPTIMIZER = "Adam"
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     #-----------------experiment configuration-------------------------#
 
     EXPERIMENT_NAME = "CNN_Test"
-    EXPERIMENT_ID = "1"
+    EXPERIMENT_ID = "2"
     EXPERIMENT_DATA_PATH = r"D:\Project\PHM_Data\ExperimentData\tests"
 
 

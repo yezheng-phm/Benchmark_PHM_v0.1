@@ -24,7 +24,7 @@ class CNNDataAdapter:
             weights_only=False,
         )
 
-        train_set = data["train"]
+        train_set = data["training"]
         validation_set = data["validation"]
         test_set = data["test"]
 
@@ -34,7 +34,7 @@ class CNNDataAdapter:
     #--transform loaded data into PyTorch tensor form.
     @staticmethod
     def adapt_data(data_set):
-        """Convert BenchmarkData X to PyTorch tensors."""
+        """Convert X_data to PyTorch tensors."""
 
         X = []
 
@@ -42,7 +42,7 @@ class CNNDataAdapter:
 
             X.append(
                 torch.tensor(
-                    data.X,
+                    data.X_data,
                     dtype=torch.float32
                 )
             )
@@ -59,15 +59,8 @@ class CNNDataAdapter:
 
         for data in data_set:
 
-            if data.y.endswith("-Normal"):
-                label = "Normal"
-            else:
-                label = "-".join(
-                    data.y.split("-")[1:]
-                )
-
             y.append(
-                label_to_index[label]
+                label_to_index[data.y]
             )
 
         return torch.tensor(
@@ -85,7 +78,7 @@ class CNNDataAdapter:
             file_path
         )
 
-        #--convert BenchmarkData X to PyTorch tensors
+        #--convert X_data to PyTorch tensors
         train_X = self.adapt_data(train_set)
         validation_X = self.adapt_data(validation_set)
         test_X = self.adapt_data(test_set)
@@ -114,9 +107,7 @@ class CNNDataAdapter:
         #--create the label mapping using the training set only
         labels = sorted(
             {
-                "Normal"
-                if data.y.endswith("-Normal")
-                else "-".join(data.y.split("-")[1:])
+                data.y
                 for data in train_set
             }
         )
